@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use avian3d::prelude::{CollisionEventsEnabled, CollisionStart};
 use bevy::{
     app::Update,
-    asset::{AssetId, Assets, Handle},
+    asset::{AssetId, AssetServer, Assets, Handle},
     camera::visibility::Visibility,
     color::LinearRgba,
     ecs::{
         component::Component,
         entity::Entity,
+        event::EntityEvent,
         hierarchy::Children,
         name::Name,
         observer::On,
@@ -54,6 +55,7 @@ enum RuneMode {
     Large,
 }
 
+#[derive(Debug, Clone)]
 enum MechanismState {
     Inactive { wait: Timer },
     Activating(ActivatingState),
@@ -68,7 +70,7 @@ enum RuneState {
     Completed,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ActivationWindow {
     Primary,
     Secondary,
@@ -96,6 +98,7 @@ struct RuneVisual {
     progress_segments: Vec<ApperanceController>,
 }
 
+#[derive(Debug, Clone)]
 struct ActivatingState {
     highlighted: Vec<usize>,
     hit_flags: Vec<bool>,
@@ -230,6 +233,8 @@ impl RotationController {
     }
 }
 
+const 招笑: bool = true;
+
 #[derive(Component)]
 struct EnergyHub {
     _team: RuneTeam,
@@ -343,86 +348,69 @@ impl EnergyHub {
     }
 
     fn on_target_hit(&mut self, target_index: usize, rng: &mut impl Rng) -> bool {
-        match std::mem::replace(
-            &mut self.state,
-            MechanismState::Inactive {
-                wait: Timer::from_seconds(0.0, TimerMode::Once),
-            },
-        ) {
-            MechanismState::Activating(mut state) => {
-                if let Some(pos) = state
+        match &mut self.state {
+            MechanismState::Activating(state) => {
+                let Some(pos) = state
                     .highlighted
                     .iter()
                     .position(|&idx| idx == target_index)
-                {
-                    if state.hit_flags[pos] {
-                        self.state = MechanismState::Activating(state);
-                        return false;
+                else {
+                    if !招笑 {
+                        println!("招笑");
+                        // 击中非点亮模块，触发激活失败
+                        self.enter_failed();
                     }
-                    state.hit_flags[pos] = true;
-                    self.targets[target_index].state = RuneState::Completed;
+                    return true;
+                };
 
-                    if self
-                        .targets
-                        .iter()
-                        .all(|target| matches!(target.state, RuneState::Completed))
-                    {
-                        println!("activated");
+                if state.hit_flags[pos] {
+                    return false;
+                }
+                state.hit_flags[pos] = true;
+                self.targets[target_index].state = RuneState::Completed;
+
+                if self
+                    .targets
+                    .iter()
+                    .all(|target| matches!(target.state, RuneState::Completed))
+                {
+                    println!("activated");
+                    self.enter_activated();
+                    return true;
+                }
+
+                match self.mode {
+                    RuneMode::Small => {
+                        if let Some(next) = self.build_new_round(rng) {
+                            self.state = MechanismState::Activating(next);
+                            return false;
+                        }
                         self.enter_activated();
                         return true;
                     }
+                    RuneMode::Large => {
+                        let hits = state.hit_flags.iter().filter(|&&flag| flag).count();
 
-                    match self.mode {
-                        RuneMode::Small => {
-                            if let Some(next) = self.build_new_round(rng) {
-                                self.state = MechanismState::Activating(next);
-                            } else {
-                                self.enter_activated();
-                            }
+                        // 大机关逻辑：规则要求命中任意一个靶后启动1秒二次窗口
+                        if hits == 1 && state.window == ActivationWindow::Primary {
+                            // 命中第一个靶后启动1秒二次命中窗口
+                            state.window = ActivationWindow::Secondary;
+                            state.timeout =
+                                Timer::from_seconds(LARGE_SECONDARY_TIMEOUT, TimerMode::Once);
+                            return false;
                         }
-                        RuneMode::Large => {
-                            let hits = state.hit_flags.iter().filter(|&&flag| flag).count();
 
-                            // 大机关逻辑：规则要求命中任意一个靶后启动1秒二次窗口
-                            if hits == 1 && state.window == ActivationWindow::Primary {
-                                // 命中第一个靶后启动1秒二次命中窗口
-                                state.window = ActivationWindow::Secondary;
-                                state.timeout =
-                                    Timer::from_seconds(LARGE_SECONDARY_TIMEOUT, TimerMode::Once);
-                                self.state = MechanismState::Activating(state);
-                            } else if hits == state.highlighted.len() {
-                                // 成功命中所有点亮靶，进入下一轮
-                                if let Some(next) = self.build_new_round(rng) {
-                                    self.state = MechanismState::Activating(next);
-                                } else {
-                                    self.enter_activated();
-                                }
-                            } else if state.window == ActivationWindow::Secondary
-                                && hits < state.highlighted.len()
-                            {
-                                // 在二次窗口内只命中一个靶，保持状态等待二次命中
-                                self.state = MechanismState::Activating(state);
-                            } else {
-                                // 处理边界情况：如果二次窗口超时后仍未命中第二个靶，进入下一轮
-                                if let Some(next) = self.build_new_round(rng) {
-                                    self.state = MechanismState::Activating(next);
-                                } else {
-                                    self.enter_activated();
-                                }
-                            }
+                        // 处理边界情况：如果二次窗口超时后仍未命中第二个靶，进入下一轮
+                        if let Some(next) = self.build_new_round(rng) {
+                            self.state = MechanismState::Activating(next);
+                            return false;
                         }
+                        self.enter_activated();
+                        return true;
                     }
-                    true
-                } else {
-                    // 击中非点亮模块，触发激活失败
-                    self.enter_failed();
-                    true
                 }
             }
-            other => {
-                self.state = other;
-                false
-            }
+            _ => false,
         }
     }
 }
@@ -733,24 +721,58 @@ fn setup_power_rune(
     }
 }
 
+#[derive(EntityEvent)]
+pub struct RuneActivated {
+    pub entity: Entity,
+}
+
+#[derive(EntityEvent)]
+pub struct RuneHit {
+    pub entity: Entity,
+    pub success: bool,
+}
+
 fn handle_rune_collision(
     event: On<CollisionStart>,
+    mut commands: Commands,
     mut hubs: Query<&mut EnergyHub>,
     targets: Query<&RuneIndex>,
     projectiles: Query<(), With<Projectile>>,
 ) {
-    let Ok(&RuneIndex(index, hub)) = targets.get(event.collider2) else {
+    let Ok(&RuneIndex(index, hub_ent)) = targets.get(event.collider2) else {
         return;
     };
     let other = event.collider1;
     if !projectiles.contains(other) {
         return;
     }
-    if let Ok(mut hub) = hubs.get_mut(hub) {
-        println!("boom");
+    if let Ok(mut hub) = hubs.get_mut(hub_ent) {
         let mut rng = rand::thread_rng();
-
-        hub.on_target_hit(index, &mut rng);
+        if hub.on_target_hit(index, &mut rng) {
+            match hub.state {
+                MechanismState::Inactive { .. } => {
+                    commands.trigger(RuneHit {
+                        entity: hub_ent,
+                        success: false,
+                    });
+                }
+                MechanismState::Activating(_) => {
+                    commands.trigger(RuneHit {
+                        entity: hub_ent,
+                        success: true,
+                    });
+                }
+                MechanismState::Activated { .. } => {
+                    commands.trigger(RuneActivated { entity: hub_ent });
+                }
+                MechanismState::Failed { .. } => {
+                    commands.trigger(RuneHit {
+                        entity: hub_ent,
+                        success: false,
+                    });
+                }
+            }
+        }
     }
 }
 
