@@ -1,4 +1,4 @@
-use std::{collections::HashMap, f32::consts::PI, rc::Weak};
+use std::{collections::HashMap, f32::consts::PI};
 
 use avian3d::prelude::{CollisionEventsEnabled, CollisionStart};
 use bevy::{
@@ -91,7 +91,7 @@ struct TargetData {
 struct TargetVisual {
     active: Entity,
     disabled: Entity,
-    legging_segments: Vec<ApperanceController>,
+    legging_segments: [Vec<ApperanceController>; 3],
     padding_segments: Vec<ApperanceController>,
     progress_segments: Vec<ApperanceController>,
 }
@@ -469,6 +469,7 @@ fn set_visibility_if_present(
 }
 
 fn apply_target_visual(
+    mode: &MechanismMode,
     visual: &mut TargetVisual,
     state: &TargetState,
     visibilities: &mut Query<&mut Visibility>,
@@ -479,7 +480,9 @@ fn apply_target_visual(
             set_visibility_if_present(visual.active, Visibility::Hidden, visibilities);
             set_visibility_if_present(visual.disabled, Visibility::Visible, visibilities);
             for swap in &mut visual.legging_segments {
-                swap.set(false, materials);
+                for swap in swap {
+                    swap.set(false, materials);
+                }
             }
             for swap in &mut visual.padding_segments {
                 swap.set(false, materials);
@@ -491,9 +494,6 @@ fn apply_target_visual(
         TargetState::Highlighted => {
             set_visibility_if_present(visual.active, Visibility::Visible, visibilities);
             set_visibility_if_present(visual.disabled, Visibility::Hidden, visibilities);
-            for swap in &mut visual.legging_segments {
-                swap.set(true, materials);
-            }
             for swap in &mut visual.padding_segments {
                 swap.set(false, materials);
             }
@@ -504,9 +504,20 @@ fn apply_target_visual(
         TargetState::Completed => {
             set_visibility_if_present(visual.active, Visibility::Visible, visibilities);
             set_visibility_if_present(visual.disabled, Visibility::Hidden, visibilities);
-            for swap in &mut visual.legging_segments {
-                swap.set(true, materials);
-            }
+            match *mode {
+                MechanismMode::Small => {
+                    for swap in &mut visual.legging_segments {
+                        for swap in swap {
+                            swap.set(true, materials);
+                        }
+                    }
+                }
+                MechanismMode::Large => {
+                    for swap in &mut visual.legging_segments[0] {
+                        swap.set(true, materials);
+                    }
+                }
+            };
             for swap in &mut visual.padding_segments {
                 swap.set(true, materials);
             }
@@ -544,9 +555,6 @@ fn build_targets(
         set_visibility_if_present(active, Visibility::Hidden, visibilities);
         set_visibility_if_present(disabled, Visibility::Visible, visibilities);
 
-        let legging_entities = collect_entities_by(name_map, |name| {
-            name.starts_with(&format!("{}_LEGGING_", prefix)) && !name.contains("PROGRESSING")
-        });
         let padding_entities = collect_entities_by(name_map, |name| {
             name.starts_with(&format!("{}_PADDING", prefix))
         });
@@ -554,8 +562,6 @@ fn build_targets(
             name.starts_with(&format!("{}_LEGGING_PROGRESSING", prefix))
         });
 
-        let legging_segments =
-            create_material_swaps(legging_entities, mesh_materials, materials, cache, children);
         let padding_segments =
             create_material_swaps(padding_entities, mesh_materials, materials, cache, children);
         let progress_segments = create_material_swaps(
@@ -579,6 +585,20 @@ fn build_targets(
                 CollisionEventsEnabled,
             )
         });
+
+        let mut legging_segments = [vec![], vec![], vec![]];
+        for legging_idx in 1..=3 {
+            legging_segments[legging_idx - 1] = create_material_swaps(
+                collect_entities_by(name_map, |name| {
+                    name.starts_with(&format!("{}_LEGGING_{}", prefix, legging_idx))
+                        && !name.contains("PROGRESSING")
+                }),
+                mesh_materials,
+                materials,
+                cache,
+                children,
+            )
+        }
 
         targets.push(TargetData {
             visual: TargetVisual {
@@ -757,9 +777,11 @@ fn energy_apply_visuals(
     mut materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
     for mut hub in &mut hubs {
+        let s = hub.mode.clone();
         for target in &mut hub.targets {
             if target.state != target.applied_state {
                 apply_target_visual(
+                    &s,
                     &mut target.visual,
                     &target.state,
                     &mut visibilities,
