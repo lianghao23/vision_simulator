@@ -7,10 +7,9 @@ use bevy::{
     camera::visibility::Visibility,
     color::LinearRgba,
     ecs::{
-        bundle::Bundle,
         component::Component,
         entity::Entity,
-        hierarchy::{ChildOf, Children},
+        hierarchy::Children,
         name::Name,
         observer::On,
         query::With,
@@ -25,6 +24,8 @@ use bevy::{
 };
 
 use rand::{Rng, seq::SliceRandom};
+
+use crate::util::{collect_entities_by, insert_recursively};
 
 #[derive(Component)]
 #[require(CollisionEventsEnabled)]
@@ -75,23 +76,6 @@ enum ActivationWindow {
 
 #[derive(Component)]
 struct TargetIndex(usize, Entity);
-
-fn insert_recursively<F, B>(
-    commands: &mut Commands,
-    root: Entity,
-    query: &Query<&Children>,
-    bundle: &F,
-) where
-    F: Fn() -> B,
-    B: Bundle,
-{
-    commands.entity(root).insert(bundle());
-    if let Ok(children) = query.get(root) {
-        for child in children {
-            insert_recursively(commands, *child, query, bundle);
-        }
-    }
-}
 
 #[derive(Resource, Default)]
 struct EnergyMaterialCache {
@@ -419,24 +403,6 @@ impl EnergyHub {
     }
 }
 
-fn collect_entities_by<F>(name_map: &HashMap<String, Entity>, mut predicate: F) -> Vec<Entity>
-where
-    F: FnMut(&str) -> bool,
-{
-    let mut entries: Vec<_> = name_map
-        .iter()
-        .filter_map(|(name, &entity)| {
-            if predicate(name) {
-                Some((name.clone(), entity))
-            } else {
-                None
-            }
-        })
-        .collect();
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-    entries.into_iter().map(|(_, entity)| entity).collect()
-}
-
 fn collect_material_swaps_recursive(
     entity: Entity,
     mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
@@ -629,21 +595,6 @@ fn build_targets(
     targets
 }
 
-fn build_shared_segments(
-    face_index: usize,
-    name_map: &HashMap<String, Entity>,
-    mesh_materials: &mut Query<&mut MeshMaterial3d<StandardMaterial>>,
-    materials: &mut Assets<StandardMaterial>,
-    cache: &mut EnergyMaterialCache,
-    children: &Query<&Children>,
-) -> Vec<ApperanceController> {
-    let prefix = format!("FACE_{}_R_", face_index);
-    let entities = collect_entities_by(name_map, |name| {
-        name.starts_with(&prefix) && (name.ends_with("_POWERED") || name.ends_with("_PADDING"))
-    });
-    create_material_swaps(entities, mesh_materials, materials, cache, children)
-}
-
 fn setup_energy(
     events: On<SceneInstanceReady>,
     mut commands: Commands,
@@ -726,7 +677,6 @@ fn setup_energy(
 
 fn handle_energy_collision(
     event: On<CollisionStart>,
-    mut commands: Commands,
     mut hubs: Query<&mut EnergyHub>,
     targets: Query<&TargetIndex>,
     projectiles: Query<(), With<Projectile>>,

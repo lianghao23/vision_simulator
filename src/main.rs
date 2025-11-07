@@ -1,4 +1,5 @@
 mod energy_hub;
+mod util;
 use std::collections::HashSet;
 
 use avian3d::prelude::*;
