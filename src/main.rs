@@ -4,7 +4,7 @@ mod statistic;
 mod util;
 use std::collections::HashSet;
 
-use avian3d::prelude::*;
+use avian3d::{math::PI, prelude::*};
 use bevy::{
     anti_alias::fxaa::Fxaa,
     core_pipeline::tonemapping::Tonemapping,
@@ -171,6 +171,13 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((
         SceneRoot(asset_server.load("GROUND_DISPLAY.glb#Scene0")),
         Transform::IDENTITY,
+        DisplayOnly,
+    ));
+    commands.spawn((
+        SceneRoot(asset_server.load("CALIB.glb#Scene0")),
+        Transform::IDENTITY
+            .with_scale(Vec3::splat(1.0))
+            .with_translation(Vec3::new(1.0, 0.5, 1.0)),
         DisplayOnly,
     ));
 
