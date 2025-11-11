@@ -178,7 +178,7 @@ impl RotationController {
     }
 }
 
-const 招笑: bool = true;
+const FUNNY: bool = true;
 
 #[derive(Component)]
 pub struct PowerRune {
@@ -313,7 +313,7 @@ impl PowerRune {
                     .iter()
                     .position(|&idx| idx == target_index)
                 else {
-                    if !招笑 {
+                    if !FUNNY {
                         // 击中非点亮模块，触发激活失败
                         self.enter_failed();
                     }

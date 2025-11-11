@@ -1,3 +1,8 @@
+use bevy::{
+    prelude::*,
+    render::view::screenshot::{Screenshot, ScreenshotCaptured},
+};
+use std::time::Duration;
 use std::{
     f32::consts::PI,
     sync::{
@@ -7,22 +12,17 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use bevy::{
-    prelude::*,
-    render::view::screenshot::{Screenshot, ScreenshotCaptured},
+use crate::{
+    robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
+    LocalInfantry,
 };
-
+use r2r::ClockType::RosTime;
 use r2r::{
-    geometry_msgs::msg::{Point, Pose, PoseStamped, TransformStamped}, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context,
+    geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context,
     Node,
     Publisher,
     QosProfile,
     WrappedTypesupport,
-};
-
-use crate::{
-    robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
-    LocalInfantry,
 };
 
 macro_rules! arc_mutex {
@@ -76,7 +76,7 @@ macro_rules! bevy_transform {
     };
 }
 
-macro_rules! res_arc_mutex {
+macro_rules! res_unwrap {
     ($res:tt) => {
         $res.0.lock().unwrap()
     };
@@ -101,30 +101,11 @@ fn capture_power_rune(
     clock: ResMut<RoboMasterClock>,
     runes: Query<(&GlobalTransform, &PowerRune)>,
     targets: Query<(&GlobalTransform, &RuneIndex)>,
-    local: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryRoot>)>,
     tf_publisher: Res<SensorPublisher<TFMessage>>,
-    pose_publisher: Res<SensorPublisher<PoseStamped>>,
 ) {
     let mut ls = vec![];
-    let stamp = Clock::to_builtin_time(&res_arc_mutex!(clock).get_now().unwrap());
-    {
-        let translation = local.translation();
-        pose_publisher
-            .0
-            .lock()
-            .unwrap()
-            .publish(&PoseStamped {
-                header: Header {
-                    stamp: stamp.clone(),
-                    frame_id: "camera_optical_frame".to_string(),
-                },
-                pose: Pose {
-                    position: bevy_xyz!(Point, translation),
-                    orientation: bevy_rot!(local.rotation()),
-                },
-            })
-            .unwrap();
-    }
+    let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
+
     for (transform, rune) in runes {
         ls.push(TransformStamped {
             header: Header {
@@ -151,16 +132,12 @@ fn capture_power_rune(
             });
         }
     }
-    tf_publisher
-        .0
-        .lock()
-        .unwrap()
+    res_unwrap!(tf_publisher)
         .publish(&TFMessage { transforms: ls })
         .unwrap();
 }
 
 fn capture_frame(mut commands: Commands, _input: Res<ButtonInput<KeyCode>>) {
-    // if input.just_pressed(KeyCode::KeyG) {
     commands.spawn(Screenshot::primary_window()).observe(
         |ev: On<ScreenshotCaptured>,
          perspective: Single<&Projection, With<MainCamera>>,
@@ -171,92 +148,87 @@ fn capture_frame(mut commands: Commands, _input: Res<ButtonInput<KeyCode>>) {
          info_publisher: Res<SensorPublisher<CameraInfo>>,
          tf_publisher: Res<SensorPublisher<TFMessage>>,
          image_publisher: Res<SensorPublisher<Image>>| {
-            let dyn_img = ev.image.clone().try_into_dynamic().unwrap();
-            let rgb8 = dyn_img.to_rgb8();
-            let (width, height) = (rgb8.width(), rgb8.height());
-
-            let info_publisher = info_publisher.0.lock().unwrap();
-            let tf_publisher = tf_publisher.0.lock().unwrap();
-            let image_publisher = image_publisher.0.lock().unwrap();
-
-            let mut clock = clock.0.lock().unwrap();
+            let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
             let hdr = Header {
-                stamp: Clock::to_builtin_time(&clock.get_now().unwrap()),
+                stamp: stamp.clone(),
                 frame_id: "camera_optical_frame".to_string(),
             };
+            let img = ev.image.clone();
 
-            let tf = TransformStamped {
-                header: Header {
-                    stamp: Clock::to_builtin_time(&clock.get_now().unwrap()),
-                    frame_id: "map".to_string(),
-                },
-                child_frame_id: "camera_optical_frame".to_string(),
-                transform: bevy_transform!(gimbal),
-            };
-
-            let (fov_y, fov_x) = match *perspective {
-                Projection::Perspective(p) => {
-                    let fov_y = p.fov as f64; // bevy 的 fov 是 vertical fov (radians)
-                    let aspect = width as f64 / height as f64;
-                    // horizontal fov from vertical fov and aspect
-                    let fov_x = 2.0 * ((fov_y / 2.0).tan() * aspect).atan();
-                    (fov_y, fov_x)
-                }
-                _ => {
-                    // fallback 保持你的旧值（以防万一）
-                    let fov_x = std::f64::consts::PI / 180.0 * 75.0;
-                    let fov_y = 2.0 * ((height as f64 / width as f64) * (fov_x / 2.0).tan()).atan();
-                    (fov_y, fov_x)
-                }
-            };
-
-            let f_x = width as f64 / (2.0 * (fov_x / 2.0).tan());
-            let f_y = height as f64 / (2.0 * (fov_y / 2.0).tan());
-
-            let c_x = width as f64 / 2.0;
-            let c_y = height as f64 / 2.0;
-
-            tf_publisher
+            let (camera_info, image) = compute_camera(*perspective, &hdr, img);
+            res_unwrap!(tf_publisher)
                 .publish(&TFMessage {
-                    transforms: vec![tf],
+                    transforms: vec![TransformStamped {
+                        header: Header {
+                            stamp: stamp.clone(),
+                            frame_id: "map".to_string(),
+                        },
+                        child_frame_id: "camera_optical_frame".to_string(),
+                        transform: bevy_transform!(gimbal),
+                    }],
                 })
                 .unwrap();
-
-            info_publisher
-                .publish(&CameraInfo {
-                    header: hdr.clone(),
-                    height,
-                    width,
-                    distortion_model: "none".to_string(),
-                    d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
-                    k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
-                    r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-                    p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
-                    binning_x: 0,
-                    binning_y: 0,
-                    roi: RegionOfInterest {
-                        x_offset: 0,
-                        y_offset: 0,
-                        height,
-                        width,
-                        do_rectify: true,
-                    },
-                })
-                .unwrap();
-            image_publisher
-                .publish(&Image {
-                    header: hdr.clone(),
-                    height: rgb8.height(),
-                    width: rgb8.width(),
-                    encoding: "rgb8".to_string(),
-                    is_bigendian: 0,
-                    step: rgb8.width() * 3,
-                    data: rgb8.into_raw(),
-                })
-                .unwrap();
+            res_unwrap!(info_publisher).publish(&camera_info).unwrap();
+            res_unwrap!(image_publisher).publish(&image).unwrap();
         },
     );
-    // }
+}
+
+fn compute_camera(
+    perspective: &Projection,
+    hdr: &Header,
+    img: bevy::image::Image,
+) -> (CameraInfo, Image) {
+    let dyn_img = img.try_into_dynamic().unwrap();
+    let rgb8 = dyn_img.to_rgb8();
+    let (width, height) = (rgb8.width(), rgb8.height());
+
+    let (fov_y, fov_x) = match perspective {
+        Projection::Perspective(p) => {
+            let fov_y = p.fov as f64;
+            let aspect = width as f64 / height as f64;
+            let fov_x = 2.0 * ((fov_y / 2.0).tan() * aspect).atan();
+            (fov_y, fov_x)
+        }
+        _ => todo!(),
+    };
+
+    let f_x = width as f64 / (2.0 * (fov_x / 2.0).tan());
+    let f_y = height as f64 / (2.0 * (fov_y / 2.0).tan());
+
+    let c_x = width as f64 / 2.0;
+    let c_y = height as f64 / 2.0;
+
+    (
+        CameraInfo {
+            header: hdr.clone(),
+            height,
+            width,
+            distortion_model: "none".to_string(),
+            d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
+            k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
+            r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
+            binning_x: 0,
+            binning_y: 0,
+            roi: RegionOfInterest {
+                x_offset: 0,
+                y_offset: 0,
+                height,
+                width,
+                do_rectify: true,
+            },
+        },
+        Image {
+            header: hdr.clone(),
+            height: rgb8.height(),
+            width: rgb8.width(),
+            encoding: "rgb8".to_string(),
+            is_bigendian: 0,
+            step: rgb8.width() * 3,
+            data: rgb8.into_raw(),
+        },
+    )
 }
 
 fn cleanup_ros2_system(
@@ -297,19 +269,16 @@ impl Plugin for ROS2Plugin {
         publisher!(app, node, CameraInfo, "/camera_info");
         publisher!(app, node, Image, "/image_raw");
         publisher!(app, node, TFMessage, "/tf");
-        publisher!(app, node, PoseStamped, "/pose");
 
-        app.insert_resource(RoboMasterClock(arc_mutex!(
-            Clock::create(r2r::ClockType::RosTime).unwrap()
-        )))
-        .insert_resource(StopSignal(signal_arc.clone()))
-        .add_systems(Update, capture_frame)
-        .add_systems(Update, capture_power_rune)
-        .add_systems(Last, cleanup_ros2_system)
-        .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
-            while !signal_arc.load(Ordering::Acquire) {
-                node.spin_once(std::time::Duration::from_millis(10));
-            }
-        }))));
+        app.insert_resource(RoboMasterClock(arc_mutex!(Clock::create(RosTime).unwrap())))
+            .insert_resource(StopSignal(signal_arc.clone()))
+            .add_systems(Update, capture_frame)
+            .add_systems(Update, capture_power_rune)
+            .add_systems(Last, cleanup_ros2_system)
+            .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
+                while !signal_arc.load(Ordering::Acquire) {
+                    node.spin_once(Duration::from_millis(10));
+                }
+            }))));
     }
 }
