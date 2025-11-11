@@ -8,7 +8,7 @@ use bevy::{
     pbr::{MeshMaterial3d, StandardMaterial},
 };
 
-use crate::util::set_visibility_if_present;
+use crate::util::set_visibility;
 
 #[derive(SystemParam)]
 pub struct Param<'w, 's> {
@@ -55,26 +55,17 @@ pub struct VisibilityBased {
 
 impl Controller for VisibilityBased {
     fn set(&mut self, powered: bool, param: &mut Param) {
-        set_visibility_if_present(
-            self.powered,
-            if powered {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            },
-            &mut param.visibilities,
-        );
+        let visibilities = match powered {
+            true => (Visibility::Visible, Visibility::Hidden),
+            false => (Visibility::Hidden, Visibility::Visible),
+        };
+
+        let (powered_vis, unpowered_vis) = visibilities;
+
+        set_visibility(self.powered, powered_vis, &mut param.visibilities).unwrap();
 
         if let Some(unpowered) = self.unpowered {
-            set_visibility_if_present(
-                unpowered,
-                if powered {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Visible
-                },
-                &mut param.visibilities,
-            );
+            set_visibility(unpowered, unpowered_vis, &mut param.visibilities).unwrap();
         }
     }
 }

@@ -1,148 +1,114 @@
-use bevy::prelude::*;
-use ros2_client::Context;
-use rustdds::{
-    Duration, QosPolicies, QosPolicyBuilder,
-    policy::{self, Deadline, Lifespan},
-};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use crate::ros2::{
-    messages::*,
-    node::{ROS2NodeConfig, ROS2NodeManager},
-    systems::{
-        handle_aim_commands, handle_velocity_commands, publish_robot_pose, publish_rune_states,
-        setup_ros2_infrastructure,
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
+    thread::{self, JoinHandle},
 };
 
-// ROS2事件定义 - 使用Bevy的Message系统
-#[derive(Event, Message)]
-pub struct ROS2RobotPose {
-    pub entity: Entity,
-    pub pose: Transform,
-    pub timestamp: f64,
-}
+use bevy::{
+    prelude::*,
+    render::view::screenshot::{Screenshot, ScreenshotCaptured},
+};
 
-#[derive(Event, Message)]
-pub struct ROS2VelocityCommand {
-    pub linear: Vec3,
-    pub angular: Vec3,
-    pub timestamp: f64,
-}
-
-#[derive(Event, Message)]
-pub struct ROS2AimCommand {
-    pub target_position: Vec3,
-    pub priority: i32,
-    pub timestamp: f64,
-}
-
-#[derive(Event, Message)]
-pub struct ROS2RuneState {
-    pub rune_id: i32,
-    pub activated: bool,
-    pub hit_count: i32,
-    pub timestamp: f64,
-}
-
-// ROS2资源配置
-#[derive(Resource)]
-pub struct ROS2Context(pub Context);
+use r2r::{
+    Clock, Context, Node, Publisher, QosProfile, sensor_msgs::msg::Image, std_msgs::msg::Header,
+};
 
 #[derive(Resource)]
-pub struct ROS2NodeManagerResource(pub Arc<Mutex<ROS2NodeManager>>);
-
-// 使用具体的消息类型而不是Box<dyn Any>来保证线程安全
+struct StopSignal(Arc<AtomicBool>);
 #[derive(Resource)]
-pub struct ROS2Publishers {
-    pub robot_pose_publisher: Option<ros2_client::Publisher<PoseStamped>>,
-    pub rune_state_publisher: Option<ros2_client::Publisher<PowerRuneState>>,
-}
+struct SpinThreadHandle(Option<JoinHandle<()>>);
+
+#[derive(Component)]
+pub struct MainCamera;
+
+#[derive(Component)]
+struct CaptureCamera;
 
 #[derive(Resource)]
-pub struct ROS2Subscriptions {
-    pub velocity_subscription: Option<ros2_client::Subscription<TwistStamped>>,
-    pub aim_subscription: Option<ros2_client::Subscription<AimCommand>>,
+pub struct RoboMasterClock(pub Arc<Mutex<Clock>>);
+
+#[derive(Resource)]
+pub struct RawCameraPublisher(pub Arc<Mutex<Publisher<Image>>>);
+
+fn capture_frame(mut commands: Commands, input: Res<ButtonInput<KeyCode>>) {
+    // if input.just_pressed(KeyCode::KeyG) {
+    commands.spawn(Screenshot::primary_window()).observe(
+        |ev: On<ScreenshotCaptured>,
+         clock: ResMut<RoboMasterClock>,
+         publ: Res<RawCameraPublisher>| {
+            let dyn_img = ev.image.clone().try_into_dynamic().unwrap();
+            let rgb8 = dyn_img.to_rgb8();
+            let publisher = publ.0.lock().unwrap();
+            let mut clock = clock.0.lock().unwrap();
+
+            publisher
+                .publish(&Image {
+                    header: Header {
+                        stamp: Clock::to_builtin_time(&clock.get_now().unwrap()),
+                        frame_id: "idk".to_string(),
+                    },
+                    height: rgb8.height(),
+                    width: rgb8.width(),
+                    encoding: "rgb8".to_string(),
+                    is_bigendian: 0,
+                    step: rgb8.width() as u32 * 3,
+                    data: rgb8.into_raw(),
+                })
+                .unwrap();
+        },
+    );
+    // }
 }
 
-// 主插件结构
-pub struct ROS2Plugin {
-    node_configs: HashMap<String, ROS2NodeConfig>,
-}
-
-impl Default for ROS2Plugin {
-    fn default() -> Self {
-        let mut node_configs = HashMap::new();
-        node_configs.insert(
-            "robot".to_string(),
-            ROS2NodeConfig {
-                namespace: "/robomaster".to_string(),
-                name: "simulator".to_string(),
-                enable_rosout: true,
-            },
-        );
-
-        Self { node_configs }
+fn cleanup_ros2_system(
+    mut exit: MessageReader<AppExit>, // 监听 AppExit 事件
+    stop_signal: Res<StopSignal>,
+    mut handle_res: ResMut<SpinThreadHandle>,
+) {
+    // 只有在接收到 AppExit 事件时才设置信号
+    if exit.read().len() > 0 {
+        stop_signal.0.store(true, Ordering::Release);
+        if let Some(handle) = handle_res.0.take() {
+            println!("Waiting for ROS 2 spin thread to join...");
+            match handle.join() {
+                Ok(_) => println!("ROS 2 thread successfully joined. Safe to exit."),
+                Err(_) => eprintln!("WARNING: ROS 2 thread panicked or failed to join."),
+            }
+        }
     }
 }
+
+#[derive(Default)]
+pub struct ROS2Plugin {}
 
 impl Plugin for ROS2Plugin {
     fn build(&self, app: &mut App) {
-        // 初始化ROS2上下文
-        let context = Context::new().unwrap();
-        let mut node_manager = ROS2NodeManager::new();
+        let ctx = Context::create().unwrap();
+        let mut node = Node::create(ctx, "node", "namespace").unwrap();
+        let publisher = node
+            .create_publisher("/camera_raw", QosProfile::default())
+            .unwrap();
+        let node = Arc::new(Mutex::new(node));
 
-        // 创建基础设施
-        for (key, config) in &self.node_configs {
-            if let Err(e) = node_manager.add_node(key.clone(), &context, config) {
-                error!("Failed to create ROS2 node '{}': {}", key, e);
+        let arc = node.clone();
+        let stop_signal = Arc::new(AtomicBool::new(false));
+        let signal_arc = stop_signal.clone();
+        let handle = thread::spawn(move || {
+            while !signal_arc.load(Ordering::Acquire) {
+                let mut node = arc.lock().unwrap();
+                node.spin_once(std::time::Duration::from_millis(10));
             }
-        }
+        });
 
-        app.insert_resource(ROS2Context(context))
-            .insert_resource(ROS2NodeManagerResource(Arc::new(Mutex::new(node_manager))))
-            .insert_resource(ROS2Publishers {
-                robot_pose_publisher: None,
-                rune_state_publisher: None,
-            })
-            .insert_resource(ROS2Subscriptions {
-                velocity_subscription: None,
-                aim_subscription: None,
-            })
-            .add_systems(Startup, setup_ros2_infrastructure)
-            .add_systems(
-                Update,
-                (
-                    publish_robot_pose,
-                    publish_rune_states,
-                    handle_velocity_commands,
-                    handle_aim_commands,
-                ),
-            );
+        app.insert_resource(RoboMasterClock(Arc::new(Mutex::new(
+            Clock::create(r2r::ClockType::RosTime).unwrap(),
+        ))))
+        .insert_resource(RawCameraPublisher(Arc::new(Mutex::new(publisher))))
+        .insert_resource(StopSignal(stop_signal))
+        .insert_resource(SpinThreadHandle(Some(handle)))
+        .add_systems(Update, capture_frame)
+        .add_systems(Last, cleanup_ros2_system);
     }
-}
-
-// QoS配置
-pub fn create_reliable_qos() -> QosPolicies {
-    QosPolicyBuilder::new()
-        .history(policy::History::KeepLast { depth: 10 })
-        .reliability(policy::Reliability::Reliable {
-            max_blocking_time: Duration::from_millis(100),
-        })
-        .durability(policy::Durability::TransientLocal)
-        .deadline(Deadline(Duration::INFINITE))
-        .lifespan(Lifespan {
-            duration: Duration::INFINITE,
-        })
-        .liveliness(policy::Liveliness::Automatic {
-            lease_duration: Duration::INFINITE,
-        })
-        .build()
-}
-
-pub fn create_default_qos() -> QosPolicies {
-    QosPolicyBuilder::new()
-        .history(policy::History::KeepLast { depth: 10 })
-        .build()
 }

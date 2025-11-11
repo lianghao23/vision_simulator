@@ -1,10 +1,10 @@
 mod handler;
-mod power_rune;
+mod robomaster;
 mod ros2;
 mod statistic;
 mod util;
 mod visibility;
-
+use bevy::camera::{ImageRenderTarget, RenderTarget};
 use bevy::render::view::screenshot::{Capturing, Screenshot, save_to_disk};
 use bevy::window::{CursorIcon, SystemCursorIcon};
 use std::collections::HashSet;
@@ -22,9 +22,10 @@ use bevy::{
 
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
+use crate::ros2::plugin::ROS2Plugin;
 use crate::{
     handler::{on_activate, on_hit},
-    power_rune::{PowerRunePlugin, PowerRuneRoot, Projectile},
+    robomaster::power_rune::{PowerRunePlugin, PowerRuneRoot, Projectile},
     statistic::{accurate_count, accurate_pct, increase_launch, launch_count},
 };
 
@@ -115,7 +116,7 @@ fn update_help_text(mut text: Query<&mut Text>) {
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
-        .add_plugins(ros2::ROS2Plugin::default())
+        .add_plugins(ROS2Plugin::default())
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
         //.add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
@@ -256,6 +257,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         MainCamera {
             follow_offset: Vec3::new(0.0, 3.0, 2.0),
         },
+        ros2::plugin::MainCamera,
     ));
 }
 

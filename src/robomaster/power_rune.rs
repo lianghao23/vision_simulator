@@ -26,7 +26,7 @@ use bevy::{
 use rand::{Rng, seq::SliceRandom};
 
 use crate::{
-    util::{extract_entities_by, insert_recursively},
+    util::{drain_entities_by, insert_recursively},
     visibility::{Combined, Controller, MaterialBased, Param, VisibilityBased},
 };
 
@@ -354,10 +354,10 @@ impl PowerRune {
                             };
                         }
                         self.enter_activated();
-                        return HitResult {
+                        HitResult {
                             accurate: true,
                             change_state: true,
-                        };
+                        }
                     }
                     RuneMode::Large => {
                         let hits = state.hit_flags.iter().filter(|&&flag| flag).count();
@@ -383,10 +383,10 @@ impl PowerRune {
                             };
                         }
                         self.enter_activated();
-                        return HitResult {
+                        HitResult {
                             accurate: true,
                             change_state: true,
-                        };
+                        }
                     }
                 }
             }
@@ -449,11 +449,7 @@ impl<'w, 's, 'a> TryFrom<Idk<'w, 's, 'a>> for MaterialBased {
         if let Ok(mut mesh_material) = param.mesh_materials.get_mut(entity) {
             let off = cache.ensure_muted(&mesh_material.0, &mut param.materials);
             let on = std::mem::replace(&mut mesh_material.0, off.clone());
-            Ok(MaterialBased {
-                entity: entity,
-                on: on,
-                off: off,
-            })
+            Ok(MaterialBased { entity, on, off })
         } else {
             Err(())
         }
@@ -596,13 +592,13 @@ fn build_targets(
         };
 
         let padding_segments = create_controller(
-            extract_entities_by(name_map, |name| {
+            drain_entities_by(name_map, |name| {
                 name.starts_with(&format!("{}_PADDING", prefix))
             }),
             param,
         );
         let progress_segments = create_controller(
-            extract_entities_by(name_map, |name| {
+            drain_entities_by(name_map, |name| {
                 name.starts_with(&format!("{}_LEGGING_PROGRESSING", prefix))
             }),
             param,
@@ -628,7 +624,7 @@ fn build_targets(
         let mut legging_segments = [vec![], vec![], vec![]];
         for legging_idx in 1..=3 {
             legging_segments[legging_idx - 1] = create_controller(
-                extract_entities_by(name_map, |name| {
+                drain_entities_by(name_map, |name| {
                     name.starts_with(&format!("{}_LEGGING_{}", prefix, legging_idx))
                         && !name.contains("PROGRESSING")
                 }),

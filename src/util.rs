@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use bevy::{
     camera::visibility::Visibility,
@@ -8,16 +8,17 @@ use bevy::{
         hierarchy::Children,
         system::{Commands, Query},
     },
+    platform::collections::HashSet,
 };
 
-pub fn extract_entities_by<T, F: Fn(&T) -> bool>(
+pub fn drain_entities_by<T, F: Fn(&T) -> bool>(
     name_map: &mut HashMap<T, Entity>,
     predicate: F,
 ) -> Vec<Entity> {
-    return name_map
+    name_map
         .extract_if(|k, _v| predicate(k))
         .map(|v| v.1)
-        .collect();
+        .collect()
 }
 
 pub fn insert_recursively<B: Bundle + Clone>(
@@ -26,20 +27,27 @@ pub fn insert_recursively<B: Bundle + Clone>(
     query: &Query<&Children>,
     bundle: B,
 ) {
-    if let Ok(children) = query.get(root) {
-        for child in children {
-            insert_recursively(commands, *child, query, bundle.clone());
+    let mut set = HashSet::new();
+    let mut stack = VecDeque::new();
+    stack.push_back(root);
+
+    while let Some(entity) = stack.pop_front() {
+        if !set.insert(entity) {
+            continue;
+        }
+        commands.entity(entity).insert(bundle.clone());
+        if let Ok(children) = query.get(entity) {
+            stack.extend(children.iter().copied());
         }
     }
-    commands.entity(root).insert(bundle);
 }
 
-pub fn set_visibility_if_present(
+pub fn set_visibility(
     entity: Entity,
     value: Visibility,
     visibilities: &mut Query<&mut Visibility>,
-) {
-    if let Ok(mut visibility) = visibilities.get_mut(entity) {
-        *visibility = value;
-    }
+) -> Result<(), bevy::ecs::query::QueryEntityError> {
+    let mut visibility = visibilities.get_mut(entity)?;
+    *visibility = value;
+    Ok(())
 }

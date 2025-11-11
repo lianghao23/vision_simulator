@@ -9,7 +9,7 @@ use bevy::{
 };
 
 use crate::{
-    power_rune::{PowerRune, RuneActivated, RuneHit},
+    robomaster::power_rune::{PowerRune, RuneActivated, RuneHit},
     statistic::increase_accurate,
 };
 
