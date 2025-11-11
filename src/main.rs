@@ -1,3 +1,4 @@
+mod camera_calibration;
 mod handler;
 mod robomaster;
 mod ros2;
@@ -120,6 +121,7 @@ fn main() {
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
         //.add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
+        .add_plugins(camera_calibration::CameraCalibrationPlugin)
         .insert_resource(CameraMode(FollowingType::Robot))
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
         .insert_resource(SubstepCount(20))
@@ -141,6 +143,7 @@ fn main() {
                 projectile_launch,
                 screenshot_on_f2,
                 screenshot_saving,
+                camera_calibration::calibration_keyboard_input,
             ),
         )
         .run();
