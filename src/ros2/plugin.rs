@@ -11,7 +11,6 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
-
 use crate::{
     robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
     LocalInfantry,
@@ -101,7 +100,7 @@ pub struct SensorPublisher<T: WrappedTypesupport>(pub Arc<Mutex<Publisher<T>>>);
 fn capture_power_rune(
     clock: ResMut<RoboMasterClock>,
     runes: Query<(&GlobalTransform, &PowerRune)>,
-    targets: Query<(&GlobalTransform, &RuneIndex), Changed<GlobalTransform>>,
+    targets: Query<(&GlobalTransform, &RuneIndex)>,
     tf_publisher: Res<SensorPublisher<TFMessage>>,
 ) {
     let mut ls = vec![];
@@ -291,7 +290,7 @@ impl Plugin for ROS2Plugin {
         app.insert_resource(RoboMasterClock(arc_mutex!(Clock::create(RosTime).unwrap())))
             .insert_resource(StopSignal(signal_arc.clone()))
             .add_systems(Update, capture_frame)
-            .add_systems(Update, capture_power_rune)
+            .add_systems(PostUpdate, capture_power_rune)
             .add_systems(Last, cleanup_ros2_system)
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
                 while !signal_arc.load(Ordering::Acquire) {
