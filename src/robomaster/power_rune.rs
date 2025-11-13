@@ -25,8 +25,8 @@ use bevy::{
 
 use rand::{seq::SliceRandom, Rng};
 
-use crate::util::bevy::{drain_entities_by, insert_all_child};
 use crate::robomaster::visibility::{Combined, Controller, MaterialBased, Param, VisibilityBased};
+use crate::util::bevy::{drain_entities_by, insert_all_child};
 
 #[derive(Component)]
 #[require(CollisionEventsEnabled)]
@@ -529,10 +529,8 @@ fn apply_target_visual(
                 }
             }
 
-            if mode == &RuneMode::Large {
-                for swap in &mut visual.progress_segments {
-                    swap.set(true, &mut param.appearance);
-                }
+            for swap in &mut visual.progress_segments {
+                swap.set(true, &mut param.appearance);
             }
         }
         RuneState::Completed => {

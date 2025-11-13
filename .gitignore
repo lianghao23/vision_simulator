@@ -2,6 +2,7 @@
 *.stp
 .DS_Store
 assets_old
-assets
+assets/*.blend
+assets/*.blend1
 .idea
 screenshot-*.png
