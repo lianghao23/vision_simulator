@@ -109,8 +109,8 @@ struct VariableRotation {
 
 impl VariableRotation {
     fn random(rng: &mut impl Rng) -> Self {
-        let a = rng.gen_range(0.780..=1.045);
-        let omega = rng.gen_range(1.884..=2.0);
+        let a = rng.random_range(0.780..=1.045);
+        let omega = rng.random_range(1.884..=2.0);
         Self { a, omega, t: 0.0 }
     }
 
@@ -761,7 +761,7 @@ fn handle_rune_collision(
         return;
     }
     if let Ok(mut rune) = runes.get_mut(rune_ent) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let result = rune.on_target_hit(index, &mut rng);
 
         match rune.state {
@@ -809,7 +809,7 @@ fn handle_rune_collision(
 
 fn rune_activation_tick(time: Res<Time>, mut runes: Query<&mut PowerRune>) {
     let delta = time.delta();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for mut rune in &mut runes {
         let action = match &mut rune.state {
             MechanismState::Inactive { wait } => {

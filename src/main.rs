@@ -8,6 +8,7 @@ use bevy::window::{CursorIcon, SystemCursorIcon};
 use std::collections::HashSet;
 
 use avian3d::prelude::*;
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::{
     anti_alias::fxaa::Fxaa,
     core_pipeline::tonemapping::Tonemapping,
@@ -17,7 +18,6 @@ use bevy::{
     render::view::Hdr,
     scene::{SceneInstance, SceneInstanceReady},
 };
-
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use crate::ros2::plugin::ROS2Plugin;
@@ -118,6 +118,10 @@ fn main() {
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
         //.add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
+        .add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            LogDiagnosticsPlugin::default(),
+        ))
         .insert_resource(CameraMode(FollowingType::Robot))
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
         .insert_resource(SubstepCount(20))
@@ -228,6 +232,29 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         Transform::from_xyz(0.0, 1.0, 0.0),
         InfantryRoot,
         LocalInfantry,
+    ));
+
+    commands.spawn((
+        RigidBody::Dynamic,
+        Collider::cuboid(0.494884, 0.433951, 0.518837),
+        CollisionLayers::new(
+            GameLayer::Vehicle,
+            [
+                GameLayer::Default,
+                GameLayer::Vehicle,
+                GameLayer::ProjectileOther,
+                GameLayer::Environment,
+            ],
+        ),
+        Mass(20.0),
+        Friction::new(0.5),
+        Restitution::ZERO,
+        LinearDamping(0.0),
+        AngularDamping(109.8),
+        LockedAxes::new().lock_rotation_x().lock_rotation_z(),
+        SceneRoot(asset_server.load("vehicle.glb#Scene0")),
+        Transform::from_xyz(1.0, 1.0, 1.0),
+        InfantryRoot,
     ));
 
     commands.spawn((
