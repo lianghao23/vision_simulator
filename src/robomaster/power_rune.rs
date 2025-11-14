@@ -536,9 +536,11 @@ fn apply_target_visual(
         RuneState::Completed => {
             visual.target.set(false, &mut param.appearance);
             // 根据模式设置灯效：小机关全亮，大机关亮第1级
+            /*
             for swap in &mut visual.padding_segments {
                 swap.set(true, &mut param.appearance);
             }
+            */
             for swap in &mut visual.progress_segments {
                 swap.set(false, &mut param.appearance);
             }
@@ -554,8 +556,8 @@ fn apply_target_visual(
                 }
                 &RuneMode::Large => {
                     // 大机关：完成时仅亮第1级灯效 LEGGING_1
-                    if let Some(first_level) = visual.legging_segments.get_mut(0) {
-                        for swap in first_level {
+                    for swap in &mut visual.legging_segments[0..=1] {
+                        for swap in swap {
                             swap.set(true, &mut param.appearance);
                         }
                     }
@@ -781,6 +783,9 @@ fn handle_rune_collision(
                         for leg in leg {
                             leg.set(true, &mut param.appearance);
                         }
+                    }
+                    for swap in &mut rune.visual.padding_segments {
+                        swap.set(true, &mut param.appearance);
                     }
                     for swap in &mut rune.visual.progress_segments {
                         swap.set(false, &mut param.appearance);
