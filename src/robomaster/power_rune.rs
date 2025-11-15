@@ -236,7 +236,7 @@ impl PowerRune {
             .iter()
             .enumerate()
             .filter_map(|(idx, target)| {
-                if matches!(target.state, Activation::Activating) {
+                if matches!(target.state, Activation::Activated) {
                     None
                 } else {
                     Some(idx)
@@ -259,7 +259,9 @@ impl PowerRune {
         let selection: Vec<usize> = available.into_iter().take(count).collect();
 
         for target in &mut self.targets {
-            target.state = Activation::Deactivated;
+            if !matches!(target.state, Activation::Activated) {
+                target.state = Activation::Deactivated;
+            }
         }
         for &idx in &selection {
             self.targets[idx].state = Activation::Activating;
@@ -285,7 +287,7 @@ impl PowerRune {
         if let Some(state) = self.build_new_round(rng) {
             self.state = MechanismState::Activating(state);
         } else {
-            self.enter_activated();
+            self.enter_completed();
         }
     }
 
@@ -304,7 +306,7 @@ impl PowerRune {
         };
     }
 
-    fn enter_activated(&mut self) {
+    fn enter_completed(&mut self) {
         self.reset_all_targets(Activation::Completed);
         // 激活状态下停止旋转
         self.rotation.clear_variable();
@@ -351,7 +353,7 @@ impl PowerRune {
                     .iter()
                     .all(|target| matches!(target.state, Activation::Activated))
                 {
-                    self.enter_activated();
+                    self.enter_completed();
                     return HitResult {
                         accurate: true,
                         change_state: true,
@@ -367,7 +369,7 @@ impl PowerRune {
                                 change_state: false,
                             };
                         }
-                        self.enter_activated();
+                        self.enter_completed();
                         HitResult {
                             accurate: true,
                             change_state: true,
@@ -396,7 +398,7 @@ impl PowerRune {
                                 change_state: false,
                             };
                         }
-                        self.enter_activated();
+                        self.enter_completed();
                         HitResult {
                             accurate: true,
                             change_state: true,
@@ -656,6 +658,9 @@ fn setup_power_rune(events: On<SceneInstanceReady>, mut param: PowerRuneParam) {
             RuneMode::Small
         };
 
+        let deactivated = name_map.remove(format!("FACE_{}_R_UNPOWERED", index).as_str());
+        let activated = name_map.remove(format!("FACE_{}_R_POWERED", index).as_str());
+
         let mut targets = build_targets(index, face_entity, &mut name_map, &mut param);
         for target in &mut targets {
             target
@@ -666,9 +671,6 @@ fn setup_power_rune(events: On<SceneInstanceReady>, mut param: PowerRuneParam) {
         if targets.is_empty() {
             continue;
         }
-
-        let deactivated = name_map.remove(format!("FACE_{}_R_UNPOWERED", index).as_str());
-        let activated = name_map.remove(format!("FACE_{}_R_POWERED", index).as_str());
 
         param.commands.entity(face_entity).insert(PowerRune::new(
             if (index & 1) > 0 {
@@ -811,7 +813,7 @@ fn rune_activation_tick(time: Res<Time>, mut runes: Query<&mut PowerRune>) {
                     if let Some(state) = rune.build_new_round(&mut rng) {
                         rune.state = MechanismState::Activating(state);
                     } else {
-                        rune.enter_activated();
+                        rune.enter_completed();
                     }
                 }
                 RuneAction::Failure => rune.enter_failed(),
