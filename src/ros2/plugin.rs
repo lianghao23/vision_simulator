@@ -12,6 +12,7 @@ use r2r::{
     QosProfile,
     WrappedTypesupport,
 };
+use std::f32::consts::PI;
 use std::time::Duration;
 use std::{
     sync::{
@@ -28,11 +29,10 @@ macro_rules! arc_mutex {
 }
 
 macro_rules! bevy_transform_ros2 {
-    ($rotation:expr) => {
-        ($rotation
-            * ::bevy::prelude::Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
-            * ::bevy::prelude::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-    };
+    ($rotation:expr) => {{
+        let (yaw,pitch,roll) = $rotation.to_euler(EulerRot::YXZ);
+        Quat::from_euler(EulerRot::ZYX,yaw,pitch,roll)
+    }};
 }
 
 macro_rules! bevy_xyzw {
@@ -46,6 +46,12 @@ macro_rules! bevy_xyzw {
     };
 }
 
+const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
+    Vec3::new(0.0, 1.0, 0.0),  // M[0,0], M[1,0], M[2,0]
+    Vec3::new(0.0, 0.0, 1.0),  // M[0,1], M[1,1], M[2,1]
+    Vec3::new(-1.0, 0.0, 0.0), // M[0,2], M[1,2], M[2,2]
+);
+
 macro_rules! bevy_rot {
     ($rotation:expr) => {
         bevy_xyzw!(bevy_transform_ros2!($rotation))
@@ -54,11 +60,12 @@ macro_rules! bevy_rot {
 
 macro_rules! bevy_xyz {
     ($t:ty, $translation:expr) => {{
-        let mut tmp: $t = ::std::default::Default::default();
+       let vec= (M_ALIGN_MAT3 * $translation);
+         let mut tmp: $t = ::std::default::Default::default();
 
-        tmp.x = $translation.z as f64;
-        tmp.y = -$translation.x as f64;
-        tmp.z = $translation.y as f64;
+        tmp.x = vec.x as f64;
+        tmp.y = vec.y as f64;
+        tmp.z = vec.z as f64;
         tmp
     }};
     ($translation:expr) => {
@@ -105,7 +112,6 @@ fn capture_power_rune(
     let mut ls = vec![];
 
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
-
     for (transform, rune) in runes {
         ls.push(TransformStamped {
             header: Header {
@@ -153,23 +159,25 @@ fn capture_frame(
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
     let hdr = Header {
         stamp: stamp.clone(),
-        frame_id: "camera_optical_frame".to_string(),
+        frame_id: "gimbal_link".to_string(),
     };
+
     let img = ev.image.clone();
 
     let (camera_info, image) = compute_camera(*perspective, &hdr, img);
     let translation =
         infantry.translation + (infantry.rotation * gimbal.rotation) * view_offset.0.translation;
     let rotation = infantry.rotation * gimbal.rotation;
+    let rotation = rotation;
 
-    res_unwrap!(tf_publisher)
+        res_unwrap!(tf_publisher)
         .publish(&TFMessage {
             transforms: vec![TransformStamped {
                 header: Header {
                     stamp: stamp.clone(),
                     frame_id: "map".to_string(),
                 },
-                child_frame_id: "camera_optical_frame".to_string(),
+                child_frame_id: "gimbal_link".to_string(),
                 transform: r2r::geometry_msgs::msg::Transform {
                     translation: bevy_xyz!(translation),
                     rotation: bevy_rot!(rotation),
@@ -213,9 +221,22 @@ fn compute_camera(
             width,
             distortion_model: "none".to_string(),
             d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
-            k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
-            r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
+            k: vec![
+                f_x, 0.0, c_x,
+                0.0, f_y, c_y,
+                0.0, 0.0, 1.0
+            ],
+            r: vec![
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0
+            ],
+            p: vec![
+                f_x, 0.0, c_x,
+                    0.0, 0.0, f_y,
+                    c_y, 0.0, 0.0,
+                    0.0, 1.0, 0.0
+            ],
             binning_x: 0,
             binning_y: 0,
             roi: RegionOfInterest {

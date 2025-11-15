@@ -286,7 +286,7 @@ fn setup(
         },
         PrimaryEguiContext,
         Projection::Perspective(PerspectiveProjection {
-            fov: std::f32::consts::PI / 180.0 * 75.0,
+            fov: std::f32::consts::PI / 180.0 * 45.0,
             near: 0.1,
             far: 500000000.0,
             ..default()
