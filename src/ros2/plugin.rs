@@ -1,11 +1,9 @@
+use crate::ros2::capture::{Captured, RosCapturePlugin};
 use crate::{
     robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
     LocalInfantry,
 };
-use bevy::{
-    prelude::*,
-    render::view::screenshot::{Screenshot, ScreenshotCaptured},
-};
+use bevy::prelude::*;
 use r2r::ClockType::RosTime;
 use r2r::{
     geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context,
@@ -33,11 +31,9 @@ macro_rules! bevy_transform_ros2 {
     ($rotation:expr) => {
         ($rotation
             * ::bevy::prelude::Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)
-            * ::bevy::prelude::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
-        )
+            * ::bevy::prelude::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
     };
 }
-
 
 macro_rules! bevy_xyzw {
     ($quat:expr) => {
@@ -141,50 +137,48 @@ fn capture_power_rune(
         .unwrap();
 }
 
-fn capture_frame(mut commands: Commands, _input: Res<ButtonInput<KeyCode>>) {
-    commands.spawn(Screenshot::primary_window()).observe(
-        |ev: On<ScreenshotCaptured>,
-         perspective: Single<&Projection, With<MainCamera>>,
+fn capture_frame(
+    ev: On<Captured>,
+    perspective: Single<&Projection, With<MainCamera>>,
 
-         infantry: Single<&Transform, (With<InfantryRoot>, With<LocalInfantry>)>,
-         gimbal: Single<&Transform, (With<LocalInfantry>, With<InfantryGimbal>)>,
-         view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
+    infantry: Single<&Transform, (With<InfantryRoot>, With<LocalInfantry>)>,
+    gimbal: Single<&Transform, (With<LocalInfantry>, With<InfantryGimbal>)>,
+    view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
 
-         clock: ResMut<RoboMasterClock>,
-         info_publisher: Res<SensorPublisher<CameraInfo>>,
-         tf_publisher: Res<SensorPublisher<TFMessage>>,
-         image_publisher: Res<SensorPublisher<Image>>| {
-            let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
-            let hdr = Header {
-                stamp: stamp.clone(),
-                frame_id: "camera_optical_frame".to_string(),
-            };
-            let img = ev.image.clone();
+    clock: ResMut<RoboMasterClock>,
+    info_publisher: Res<SensorPublisher<CameraInfo>>,
+    tf_publisher: Res<SensorPublisher<TFMessage>>,
+    image_publisher: Res<SensorPublisher<Image>>,
+) {
+    let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
+    let hdr = Header {
+        stamp: stamp.clone(),
+        frame_id: "camera_optical_frame".to_string(),
+    };
+    let img = ev.image.clone();
 
-            let (camera_info, image) = compute_camera(*perspective, &hdr, img);
-            let translation = infantry.translation
-                + (infantry.rotation * gimbal.rotation) * view_offset.0.translation;
-            let rotation = infantry.rotation * gimbal.rotation;
+    let (camera_info, image) = compute_camera(*perspective, &hdr, img);
+    let translation =
+        infantry.translation + (infantry.rotation * gimbal.rotation) * view_offset.0.translation;
+    let rotation = infantry.rotation * gimbal.rotation;
 
-            res_unwrap!(tf_publisher)
-                .publish(&TFMessage {
-                    transforms: vec![TransformStamped {
-                        header: Header {
-                            stamp: stamp.clone(),
-                            frame_id: "map".to_string(),
-                        },
-                        child_frame_id: "camera_optical_frame".to_string(),
-                        transform: r2r::geometry_msgs::msg::Transform {
-                            translation: bevy_xyz!(translation),
-                            rotation: bevy_rot!(rotation),
-                        },
-                    }],
-                })
-                .unwrap();
-            res_unwrap!(info_publisher).publish(&camera_info).unwrap();
-            res_unwrap!(image_publisher).publish(&image).unwrap();
-        },
-    );
+    res_unwrap!(tf_publisher)
+        .publish(&TFMessage {
+            transforms: vec![TransformStamped {
+                header: Header {
+                    stamp: stamp.clone(),
+                    frame_id: "map".to_string(),
+                },
+                child_frame_id: "camera_optical_frame".to_string(),
+                transform: r2r::geometry_msgs::msg::Transform {
+                    translation: bevy_xyz!(translation),
+                    rotation: bevy_rot!(rotation),
+                },
+            }],
+        })
+        .unwrap();
+    res_unwrap!(info_publisher).publish(&camera_info).unwrap();
+    res_unwrap!(image_publisher).publish(&image).unwrap();
 }
 
 fn compute_camera(
@@ -288,7 +282,11 @@ impl Plugin for ROS2Plugin {
 
         app.insert_resource(RoboMasterClock(arc_mutex!(Clock::create(RosTime).unwrap())))
             .insert_resource(StopSignal(signal_arc.clone()))
-            .add_systems(Update, capture_frame)
+            .add_plugins(RosCapturePlugin {
+                width: 1440,
+                height: 1080,
+            })
+            .add_observer(capture_frame)
             .add_systems(PostUpdate, capture_power_rune)
             .add_systems(Last, cleanup_ros2_system)
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {

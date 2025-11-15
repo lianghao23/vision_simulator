@@ -3,6 +3,13 @@ mod robomaster;
 mod ros2;
 mod statistic;
 mod util;
+
+use crate::ros2::plugin::ROS2Plugin;
+use crate::{
+    handler::{on_activate, on_hit},
+    robomaster::power_rune::{PowerRunePlugin, PowerRuneRoot, Projectile},
+    statistic::{accurate_count, accurate_pct, increase_launch, launch_count},
+};
 use avian3d::prelude::*;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::render::view::screenshot::{save_to_disk, Capturing, Screenshot};
@@ -16,15 +23,9 @@ use bevy::{
     render::view::Hdr,
     scene::{SceneInstance, SceneInstanceReady},
 };
+use bevy_inspector_egui::bevy_egui::{EguiGlobalSettings, PrimaryEguiContext};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use std::collections::HashSet;
-
-use crate::ros2::plugin::ROS2Plugin;
-use crate::{
-    handler::{on_activate, on_hit},
-    robomaster::power_rune::{PowerRunePlugin, PowerRuneRoot, Projectile},
-    statistic::{accurate_count, accurate_pct, increase_launch, launch_count},
-};
 
 #[derive(Component)]
 struct MainCamera {
@@ -162,7 +163,12 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut egui_global_settings: ResMut<EguiGlobalSettings>,
+) {
+    egui_global_settings.auto_create_primary_context = false;
     spawn_text(&mut commands);
     commands.spawn((
         DirectionalLight {
@@ -278,6 +284,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             shutter_angle: 0.25,
             samples: 4,
         },
+        PrimaryEguiContext,
         Projection::Perspective(PerspectiveProjection {
             fov: std::f32::consts::PI / 180.0 * 75.0,
             near: 0.1,
@@ -529,7 +536,7 @@ fn vehicle_controls(
 
 fn remote_vehicle_controls(
     time: Res<Time>,
-    mode: Res<CameraMode>,
+    _mode: Res<CameraMode>,
     keyboard: Res<ButtonInput<KeyCode>>,
     infantry: Single<Forces, (With<InfantryRoot>, Without<LocalInfantry>)>,
     gimbal: Single<
