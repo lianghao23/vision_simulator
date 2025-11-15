@@ -146,7 +146,9 @@ fn main() {
                 update_help_text,
                 following_controls,
                 vehicle_controls,
+                remote_vehicle_controls,
                 gimbal_controls,
+                remote_gimbal_controls,
                 freecam_controls,
                 update_camera_follow,
                 screenshot_on_f2,
@@ -525,6 +527,66 @@ fn vehicle_controls(
     chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis_data.yaw, 0.0, 0.0);
 }
 
+fn remote_vehicle_controls(
+    time: Res<Time>,
+    mode: Res<CameraMode>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    infantry: Single<Forces, (With<InfantryRoot>, Without<LocalInfantry>)>,
+    gimbal: Single<
+        (&GlobalTransform, &InfantryGimbal),
+        (Without<LocalInfantry>, Without<InfantryChassis>),
+    >,
+    chassis: Single<
+        (&mut Transform, &mut InfantryChassis),
+        (Without<LocalInfantry>, Without<InfantryGimbal>),
+    >,
+) {
+    let mut input = Vec2::ZERO;
+    if keyboard.pressed(KeyCode::KeyI) {
+        input.y += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyK) {
+        input.y -= 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyL) {
+        input.x += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyJ) {
+        input.x -= 1.0;
+    }
+
+    let dt = time.delta_secs();
+    let mut forces = infantry.into_inner();
+
+    let (mut chassis_transform, mut chassis_data) = chassis.into_inner();
+    let (gimbal_transform, _gimbal) = gimbal.into_inner();
+
+    let forward = gimbal_transform.forward().with_y(0.0);
+    let right = gimbal_transform.right().with_y(0.0);
+    let forward_xz = forward.with_y(0.0).normalize_or_zero();
+    let right_xz = right.with_y(0.0).normalize_or_zero();
+
+    let desired_dir = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
+    forces.apply_linear_acceleration(desired_dir * VEHICLE_ACCEL);
+    let linear_vel = forces.linear_velocity();
+    let current_velocity = linear_vel.length();
+    if current_velocity > MAX_VEHICLE_VELOCITY {
+        let brake_force = linear_vel.normalize() * (current_velocity - MAX_VEHICLE_VELOCITY) * 50.0;
+        forces.apply_linear_acceleration(-brake_force);
+    } else if input == Vec2::ZERO {
+        forces.apply_linear_acceleration(-linear_vel * 10.0);
+    }
+
+    if keyboard.pressed(KeyCode::KeyU) {
+        chassis_data.yaw += VEHICLE_ROTATION_SPEED * dt;
+    }
+    if keyboard.pressed(KeyCode::KeyO) {
+        chassis_data.yaw -= VEHICLE_ROTATION_SPEED * dt;
+    }
+
+    chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis_data.yaw, 0.0, 0.0);
+}
+
 fn gimbal_controls(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -549,6 +611,41 @@ fn gimbal_controls(
         gimbal_data.pitch += GIMBAL_ROTATION_SPEED * dt;
     }
     if keyboard.pressed(KeyCode::ArrowDown) {
+        gimbal_data.pitch -= GIMBAL_ROTATION_SPEED * dt;
+    }
+
+    gimbal_data.pitch = gimbal_data.pitch.clamp(-0.785, 0.785);
+
+    let gimbal_rotation =
+        Quat::from_euler(EulerRot::YXZ, gimbal_data.local_yaw, gimbal_data.pitch, 0.0);
+
+    gimbal_transform.rotation = gimbal_rotation;
+}
+
+fn remote_gimbal_controls(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    gimbal: Single<
+        (&mut Transform, &mut InfantryGimbal),
+        (Without<LocalInfantry>, Without<InfantryChassis>),
+    >,
+) {
+    let dt = time.delta_secs();
+    let (mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
+
+    (gimbal_data.local_yaw, gimbal_data.pitch, _) =
+        gimbal_transform.rotation.to_euler(EulerRot::YXZ);
+
+    if keyboard.pressed(KeyCode::KeyC) {
+        gimbal_data.local_yaw += GIMBAL_ROTATION_SPEED * dt;
+    }
+    if keyboard.pressed(KeyCode::KeyB) {
+        gimbal_data.local_yaw -= GIMBAL_ROTATION_SPEED * dt;
+    }
+    if keyboard.pressed(KeyCode::KeyF) {
+        gimbal_data.pitch += GIMBAL_ROTATION_SPEED * dt;
+    }
+    if keyboard.pressed(KeyCode::KeyV) {
         gimbal_data.pitch -= GIMBAL_ROTATION_SPEED * dt;
     }
 
