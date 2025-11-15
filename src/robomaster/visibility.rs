@@ -29,14 +29,6 @@ pub enum Activation {
     Completed = 3,
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum ControllerType {
-    Material = 0,
-    Visibility = 1,
-    Combined = 2,
-}
-
 pub enum Controller {
     Material(
         Entity,

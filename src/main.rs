@@ -18,7 +18,6 @@ use bevy::{
 };
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use std::collections::HashSet;
-use std::ops::Add;
 
 use crate::ros2::plugin::ROS2Plugin;
 use crate::{
@@ -124,7 +123,7 @@ fn main() {
             }),
             PhysicsPlugins::default(),
         ))
-        //.add_plugins(ROS2Plugin::default())
+        .add_plugins(ROS2Plugin::default())
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
         //.add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
@@ -156,7 +155,7 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            (projectile_launch.after(TransformSystems::Propagate)),
+            projectile_launch.after(TransformSystems::Propagate),
         )
         .run();
 }

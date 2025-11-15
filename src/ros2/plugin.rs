@@ -1,6 +1,6 @@
 use crate::{
-    InfantryGimbal, InfantryRoot, InfantryViewOffset, LocalInfantry,
-    robomaster::power_rune::{PowerRune, RuneIndex},
+    robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
+    LocalInfantry,
 };
 use bevy::{
     prelude::*,
@@ -8,19 +8,17 @@ use bevy::{
 };
 use r2r::ClockType::RosTime;
 use r2r::{
-    Clock, Context, Node, Publisher, QosProfile, WrappedTypesupport,
-    geometry_msgs::msg::TransformStamped,
-    sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest},
-    std_msgs::msg::Header,
-    tf2_msgs::msg::TFMessage,
+    geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context,
+    Node,
+    Publisher,
+    QosProfile,
+    WrappedTypesupport,
 };
-use std::mem::swap;
 use std::time::Duration;
 use std::{
-    f32::consts::PI,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, Ordering}, Arc,
+        Mutex,
     },
     thread::{self, JoinHandle},
 };
@@ -137,13 +135,6 @@ fn capture_power_rune(
     res_unwrap!(tf_publisher)
         .publish(&TFMessage { transforms: ls })
         .unwrap();
-}
-
-fn capture_local_infantry(
-    _infantry: Single<&Transform, (With<InfantryRoot>, With<LocalInfantry>)>,
-    gimbal: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryGimbal>)>,
-    _view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
-) {
 }
 
 fn capture_frame(mut commands: Commands, _input: Res<ButtonInput<KeyCode>>) {
