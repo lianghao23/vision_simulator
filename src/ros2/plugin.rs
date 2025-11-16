@@ -7,8 +7,8 @@ use crate::{
 use bevy::prelude::*;
 use r2r::ClockType::RosTime;
 use r2r::{
-    geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header,
-    tf2_msgs::msg::TFMessage,
+    sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage
+    ,
     Clock,
     Context,
     Node,
@@ -22,6 +22,13 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+
+const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
+    Vec3::new(0.0, 1.0, 0.0),  // M[0,0], M[1,0], M[2,0]
+    Vec3::new(0.0, 0.0, 1.0),  // M[0,1], M[1,1], M[2,1]
+    Vec3::new(-1.0, 0.0, 0.0), // M[0,2], M[1,2], M[2,2]
+);
+
 macro_rules! bevy_transform_ros2 {
     ($rotation:expr) => {{
         let (yaw, pitch, roll) = $rotation.to_euler(EulerRot::YXZ);
@@ -31,7 +38,7 @@ macro_rules! bevy_transform_ros2 {
 
 macro_rules! bevy_quat {
     ($quat:expr) => {
-        r2r::geometry_msgs::msg::Quaternion {
+        ::r2r::geometry_msgs::msg::Quaternion {
             x: $quat.x as f64,
             y: $quat.y as f64,
             z: $quat.z as f64,
@@ -39,12 +46,6 @@ macro_rules! bevy_quat {
         }
     };
 }
-
-const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
-    Vec3::new(0.0, 1.0, 0.0),  // M[0,0], M[1,0], M[2,0]
-    Vec3::new(0.0, 0.0, 1.0),  // M[0,1], M[1,1], M[2,1]
-    Vec3::new(-1.0, 0.0, 0.0), // M[0,2], M[1,2], M[2,2]
-);
 
 macro_rules! bevy_rot {
     ($rotation:expr) => {
@@ -94,42 +95,24 @@ pub struct MainCamera;
 #[derive(Resource)]
 pub struct RoboMasterClock(pub Arc<Mutex<Clock>>);
 
-fn capture_power_rune(
-    clock: ResMut<RoboMasterClock>,
-    runes: Query<(&GlobalTransform, &PowerRune)>,
-    targets: Query<(&GlobalTransform, &RuneIndex)>,
-    tf_publisher: Res<TopicPublisher<GlobalTransformTopic>>,
-) {
-    let mut ls = vec![];
-
-    let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
-    for (transform, rune) in runes {
-        ls.push(TransformStamped {
-            header: Header {
-                stamp: stamp.clone(),
-                frame_id: "map".to_string(),
+macro_rules! add_tf_frame {
+    ($ls:ident, $hdr:expr, $id:expr, $translation:expr, $rotation:expr) => {
+        $ls.push(::r2r::geometry_msgs::msg::TransformStamped {
+            header: $hdr.clone(),
+            child_frame_id: $id.to_string(),
+            transform: ::r2r::geometry_msgs::msg::Transform {
+                translation: bevy_xyz!($translation),
+                rotation: bevy_rot!($rotation),
             },
-            child_frame_id: format!("power_rune_{:?}", rune.mode)
-                .to_string()
-                .to_lowercase(),
-            transform: bevy_transform!(transform),
         });
-    }
-    for (target_transform, target) in targets {
-        if let Ok((_rune_transform, rune)) = runes.get(target.1) {
-            ls.push(TransformStamped {
-                header: Header {
-                    stamp: stamp.clone(),
-                    frame_id: "map".to_string(),
-                },
-                child_frame_id: format!("power_rune_{:?}_{:?}", rune.mode, target.0)
-                    .to_string()
-                    .to_lowercase(),
-                transform: bevy_transform!(target_transform),
-            });
-        }
-    }
-    tf_publisher.publish(TFMessage { transforms: ls });
+    };
+    ($ls:ident, $hdr:expr, $id:expr, $transform:expr) => {
+        $ls.push(::r2r::geometry_msgs::msg::TransformStamped {
+            header: $hdr.clone(),
+            child_frame_id: $id.to_string(),
+            transform: bevy_transform!($transform),
+        });
+    };
 }
 
 fn capture_frame(
@@ -140,45 +123,75 @@ fn capture_frame(
     gimbal: Single<&Transform, (With<LocalInfantry>, With<InfantryGimbal>)>,
     view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
 
+    runes: Query<(&GlobalTransform, &PowerRune)>,
+    targets: Query<(&GlobalTransform, &RuneIndex)>,
+
     clock: ResMut<RoboMasterClock>,
-    info_publisher: Res<TopicPublisher<CameraInfoTopic>>,
+
     tf_publisher: Res<TopicPublisher<GlobalTransformTopic>>,
-    image_publisher: Res<TopicPublisher<ImageRawTopic>>,
+    camera_info_pub: Res<TopicPublisher<CameraInfoTopic>>,
+    image_raw_pub: Res<TopicPublisher<ImageRawTopic>>,
 ) {
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
-    let hdr = Header {
+    let mut transform_stamped = vec![];
+    let map_hdr = Header {
+        stamp: stamp.clone(),
+        frame_id: "map".to_string(),
+    };
+    let gimbal_hdr = Header {
         stamp: stamp.clone(),
         frame_id: "gimbal_link".to_string(),
     };
 
     let img = ev.image.clone();
+    let (camera_info, image) = compute_camera(&perspective, gimbal_hdr.clone(), img);
 
-    let (camera_info, image) = compute_camera(*perspective, &hdr, img);
     let translation =
         infantry.translation + (infantry.rotation * gimbal.rotation) * view_offset.0.translation;
     let rotation = infantry.rotation * gimbal.rotation;
     let rotation = rotation;
 
+    camera_info_pub.publish(camera_info);
+    image_raw_pub.publish(image);
+
+    add_tf_frame!(
+        transform_stamped,
+        map_hdr.clone(),
+        "gimbal_link",
+        translation,
+        rotation
+    );
+
+    for (transform, rune) in runes {
+        add_tf_frame!(
+            transform_stamped,
+            map_hdr.clone(),
+            format!("power_rune_{:?}", rune.mode)
+                .to_string()
+                .to_lowercase(),
+            transform
+        );
+    }
+    for (target_transform, target) in targets {
+        if let Ok((_rune_transform, rune)) = runes.get(target.1) {
+            add_tf_frame!(
+                transform_stamped,
+                map_hdr.clone(),
+                format!("power_rune_{:?}_{:?}", rune.mode, target.0)
+                    .to_string()
+                    .to_lowercase(),
+                target_transform
+            );
+        }
+    }
     tf_publisher.publish(TFMessage {
-        transforms: vec![TransformStamped {
-            header: Header {
-                stamp: stamp.clone(),
-                frame_id: "map".to_string(),
-            },
-            child_frame_id: "gimbal_link".to_string(),
-            transform: r2r::geometry_msgs::msg::Transform {
-                translation: bevy_xyz!(translation),
-                rotation: bevy_rot!(rotation),
-            },
-        }],
+        transforms: transform_stamped,
     });
-    info_publisher.publish(camera_info);
-    image_publisher.publish(image);
 }
 
 fn compute_camera(
     perspective: &Projection,
-    hdr: &Header,
+    hdr: Header,
     img: bevy::image::Image,
 ) -> (CameraInfo, Image) {
     let dyn_img = img.try_into_dynamic().unwrap();
@@ -222,7 +235,7 @@ fn compute_camera(
             },
         },
         Image {
-            header: hdr.clone(),
+            header: hdr,
             height: rgb8.height(),
             width: rgb8.width(),
             encoding: "rgb8".to_string(),
@@ -263,9 +276,6 @@ impl Plugin for ROS2Plugin {
             CameraInfoTopic,
             ImageRawTopic,
             GlobalTransformTopic,
-            GimbalLinkTopic,
-            OdomTopic,
-            CameraLinkTopic
         );
 
         app.insert_resource(RoboMasterClock(arc_mutex!(Clock::create(RosTime).unwrap())))
@@ -275,7 +285,6 @@ impl Plugin for ROS2Plugin {
                 height: 1080,
             })
             .add_observer(capture_frame)
-            .add_systems(PostUpdate, capture_power_rune)
             .add_systems(Last, cleanup_ros2_system)
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
                 while !signal_arc.load(Ordering::Acquire) {

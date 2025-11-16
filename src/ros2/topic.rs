@@ -50,6 +50,3 @@ macro_rules! define_topic {
 define_topic!(CameraInfoTopic, CameraInfo, "/camera_info");
 define_topic!(ImageRawTopic, Image, "/image_raw");
 define_topic!(GlobalTransformTopic, TFMessage, "/tf");
-define_topic!(GimbalLinkTopic, TFMessage, "/gimbal_link");
-define_topic!(OdomTopic, TFMessage, "/odom");
-define_topic!(CameraLinkTopic, TFMessage, "/camera_link");
