@@ -29,7 +29,7 @@ macro_rules! bevy_transform_ros2 {
     }};
 }
 
-macro_rules! bevy_xyzw {
+macro_rules! bevy_quat {
     ($quat:expr) => {
         r2r::geometry_msgs::msg::Quaternion {
             x: $quat.x as f64,
@@ -48,7 +48,7 @@ const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
 
 macro_rules! bevy_rot {
     ($rotation:expr) => {
-        bevy_xyzw!(bevy_transform_ros2!($rotation))
+        bevy_quat!(bevy_transform_ros2!($rotation))
     };
 }
 

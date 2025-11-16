@@ -25,7 +25,7 @@ pub fn on_activate(
     commands.spawn(AudioPlayer::new(asset_server.load("rune_activated.ogg")));
 }
 
-pub fn on_hit(ev: On<RuneHit>, mut _commands: Commands, query: Query<(&Transform, &PowerRune)>) {
+pub fn on_hit(ev: On<RuneHit>, _commands: Commands, query: Query<(&Transform, &PowerRune)>) {
     let Ok((_transform, _rune)) = query.get(ev.rune) else {
         return;
     };
