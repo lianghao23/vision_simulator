@@ -189,7 +189,7 @@ impl Plugin for RosCapturePlugin {
             width: self.width,
             height: self.height,
         })
-        .add_systems(Update, sync_camera);
+            .add_systems(Update, sync_camera);
 
         app.add_systems(Startup, setup_capture_scene);
 

@@ -1,18 +1,18 @@
 use crate::ros2::capture::{Captured, RosCapturePlugin};
+use crate::ros2::topic::*;
 use crate::{
-    robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
+    arc_mutex, publisher, robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
     LocalInfantry,
 };
 use bevy::prelude::*;
 use r2r::ClockType::RosTime;
 use r2r::{
-    geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context,
+    geometry_msgs::msg::TransformStamped, sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header,
+    tf2_msgs::msg::TFMessage,
+    Clock,
+    Context,
     Node,
-    Publisher,
-    QosProfile,
-    WrappedTypesupport,
 };
-use std::f32::consts::PI;
 use std::time::Duration;
 use std::{
     sync::{
@@ -22,16 +22,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-macro_rules! arc_mutex {
-    ($elem:expr) => {
-        ::std::sync::Arc::new(::std::sync::Mutex::new($elem))
-    };
-}
-
 macro_rules! bevy_transform_ros2 {
     ($rotation:expr) => {{
-        let (yaw,pitch,roll) = $rotation.to_euler(EulerRot::YXZ);
-        Quat::from_euler(EulerRot::ZYX,yaw,pitch,roll)
+        let (yaw, pitch, roll) = $rotation.to_euler(EulerRot::YXZ);
+        Quat::from_euler(EulerRot::ZYX, yaw, pitch, roll)
     }};
 }
 
@@ -60,8 +54,8 @@ macro_rules! bevy_rot {
 
 macro_rules! bevy_xyz {
     ($t:ty, $translation:expr) => {{
-       let vec= (M_ALIGN_MAT3 * $translation);
-         let mut tmp: $t = ::std::default::Default::default();
+        let vec = (M_ALIGN_MAT3 * $translation);
+        let mut tmp: $t = ::std::default::Default::default();
 
         tmp.x = vec.x as f64;
         tmp.y = vec.y as f64;
@@ -100,14 +94,11 @@ pub struct MainCamera;
 #[derive(Resource)]
 pub struct RoboMasterClock(pub Arc<Mutex<Clock>>);
 
-#[derive(Resource)]
-pub struct SensorPublisher<T: WrappedTypesupport>(pub Arc<Mutex<Publisher<T>>>);
-
 fn capture_power_rune(
     clock: ResMut<RoboMasterClock>,
     runes: Query<(&GlobalTransform, &PowerRune)>,
     targets: Query<(&GlobalTransform, &RuneIndex)>,
-    tf_publisher: Res<SensorPublisher<TFMessage>>,
+    tf_publisher: Res<TopicPublisher<GlobalTransformTopic>>,
 ) {
     let mut ls = vec![];
 
@@ -138,9 +129,7 @@ fn capture_power_rune(
             });
         }
     }
-    res_unwrap!(tf_publisher)
-        .publish(&TFMessage { transforms: ls })
-        .unwrap();
+    tf_publisher.publish(TFMessage { transforms: ls });
 }
 
 fn capture_frame(
@@ -152,9 +141,9 @@ fn capture_frame(
     view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
 
     clock: ResMut<RoboMasterClock>,
-    info_publisher: Res<SensorPublisher<CameraInfo>>,
-    tf_publisher: Res<SensorPublisher<TFMessage>>,
-    image_publisher: Res<SensorPublisher<Image>>,
+    info_publisher: Res<TopicPublisher<CameraInfoTopic>>,
+    tf_publisher: Res<TopicPublisher<GlobalTransformTopic>>,
+    image_publisher: Res<TopicPublisher<ImageRawTopic>>,
 ) {
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
     let hdr = Header {
@@ -170,23 +159,21 @@ fn capture_frame(
     let rotation = infantry.rotation * gimbal.rotation;
     let rotation = rotation;
 
-        res_unwrap!(tf_publisher)
-        .publish(&TFMessage {
-            transforms: vec![TransformStamped {
-                header: Header {
-                    stamp: stamp.clone(),
-                    frame_id: "map".to_string(),
-                },
-                child_frame_id: "gimbal_link".to_string(),
-                transform: r2r::geometry_msgs::msg::Transform {
-                    translation: bevy_xyz!(translation),
-                    rotation: bevy_rot!(rotation),
-                },
-            }],
-        })
-        .unwrap();
-    res_unwrap!(info_publisher).publish(&camera_info).unwrap();
-    res_unwrap!(image_publisher).publish(&image).unwrap();
+    tf_publisher.publish(TFMessage {
+        transforms: vec![TransformStamped {
+            header: Header {
+                stamp: stamp.clone(),
+                frame_id: "map".to_string(),
+            },
+            child_frame_id: "gimbal_link".to_string(),
+            transform: r2r::geometry_msgs::msg::Transform {
+                translation: bevy_xyz!(translation),
+                rotation: bevy_rot!(rotation),
+            },
+        }],
+    });
+    info_publisher.publish(camera_info);
+    image_publisher.publish(image);
 }
 
 fn compute_camera(
@@ -221,22 +208,9 @@ fn compute_camera(
             width,
             distortion_model: "none".to_string(),
             d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
-            k: vec![
-                f_x, 0.0, c_x,
-                0.0, f_y, c_y,
-                0.0, 0.0, 1.0
-            ],
-            r: vec![
-                1.0, 0.0, 0.0,
-                0.0, 1.0, 0.0,
-                0.0, 0.0, 1.0
-            ],
-            p: vec![
-                f_x, 0.0, c_x,
-                    0.0, 0.0, f_y,
-                    c_y, 0.0, 0.0,
-                    0.0, 1.0, 0.0
-            ],
+            k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
+            r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
             binning_x: 0,
             binning_y: 0,
             roi: RegionOfInterest {
@@ -279,27 +253,20 @@ fn cleanup_ros2_system(
 #[derive(Default)]
 pub struct ROS2Plugin {}
 
-macro_rules! publisher {
-    ($app:ident,$node:ident,$t:ty,$topic:expr) => {
-        $app.insert_resource(SensorPublisher(arc_mutex!(
-            $node
-                .create_publisher::<$t>($topic, QosProfile::default())
-                .unwrap()
-        )));
-    };
-}
-
 impl Plugin for ROS2Plugin {
     fn build(&self, app: &mut App) {
         let mut node = Node::create(Context::create().unwrap(), "simulator", "robomaster").unwrap();
         let signal_arc = Arc::new(AtomicBool::new(false));
-
-        publisher!(app, node, CameraInfo, "/camera_info");
-        publisher!(app, node, Image, "/image_raw");
-        publisher!(app, node, TFMessage, "/tf");
-        // publisher!(app, node, TFMessage, "/gimbal_link"); //map global transform ros2系 translation+rotation
-        // publisher!(app, node, TFMessage, "/odom"); //map global ros2系 translation
-        // publisher!(app, node, TFMessage, "/camera_link"); //rotation gimbal_link
+        publisher!(
+            app,
+            node,
+            CameraInfoTopic,
+            ImageRawTopic,
+            GlobalTransformTopic,
+            GimbalLinkTopic,
+            OdomTopic,
+            CameraLinkTopic
+        );
 
         app.insert_resource(RoboMasterClock(arc_mutex!(Clock::create(RosTime).unwrap())))
             .insert_resource(StopSignal(signal_arc.clone()))
