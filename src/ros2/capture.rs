@@ -244,10 +244,6 @@ fn setup_capture_scene(
             target: render_target_handle.clone().into(),
             ..default()
         },
-        MotionBlur {
-            shutter_angle: 0.25,
-            samples: 4,
-        },
         Projection::Perspective(PerspectiveProjection {
             fov: config.fov,
             near: 0.1,

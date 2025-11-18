@@ -284,10 +284,6 @@ fn setup(
         Camera3d::default(),
         Bloom::NATURAL,
         Camera::default(),
-        MotionBlur {
-            shutter_angle: 0.25,
-            samples: 4,
-        },
         PrimaryEguiContext,
         Projection::Perspective(PerspectiveProjection {
             fov: std::f32::consts::PI / 180.0 * 45.0,

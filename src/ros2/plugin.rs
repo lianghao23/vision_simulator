@@ -6,7 +6,7 @@ use crate::{
 };
 use bevy::prelude::*;
 use r2r::geometry_msgs::msg::{Pose, PoseStamped};
-use r2r::ClockType::{RosTime, SystemTime};
+use r2r::ClockType::SystemTime;
 use r2r::{
     sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage,
     Clock,
@@ -112,7 +112,7 @@ macro_rules! pose {
 
 fn capture_rune(
     runes: Query<(&GlobalTransform, &PowerRune)>,
-    targets: Query<(&GlobalTransform, &RuneIndex)>,
+    targets: Query<(&GlobalTransform, &RuneIndex, &Name)>,
 
     clock: ResMut<RoboMasterClock>,
 
@@ -135,7 +135,10 @@ fn capture_rune(
             transform.compute_transform()
         );
     }
-    for (target_transform, target) in targets {
+    for (target_transform, target, name) in targets {
+        if !name.contains("_ACTIVATED") {
+            continue;
+        }
         if let Ok((_rune_transform, rune)) = runes.get(target.1) {
             add_tf_frame!(
                 transform_stamped,
@@ -159,10 +162,10 @@ fn capture_rune(
 
 fn capture_frame(
     ev: On<Captured>,
-    perspective: Single<&Projection, With<MainCamera>>,
+    camera: Single<(&GlobalTransform, &Projection), With<MainCamera>>,
 
-    infantry: Single<&Transform, (With<InfantryRoot>, With<LocalInfantry>)>,
-    gimbal: Single<&Transform, (With<LocalInfantry>, With<InfantryGimbal>)>,
+    infantry: Single<&GlobalTransform, (With<InfantryRoot>, With<LocalInfantry>)>,
+    gimbal: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryGimbal>)>,
     view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
 
     clock: ResMut<RoboMasterClock>,
@@ -175,6 +178,7 @@ fn capture_frame(
     mut odom_pose_pub: ResMut<TopicPublisher<OdomPoseTopic>>,
     mut camera_pose_pub: ResMut<TopicPublisher<CameraPoseTopic>>,
 ) {
+    let (cam_transform, perspective) = camera.into_inner();
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
     let mut transform_stamped = vec![];
     let map_hdr = Header {
@@ -211,22 +215,24 @@ fn capture_frame(
         transform_stamped,
         map_hdr.clone(),
         "odom",
-        infantry.translation,
-        infantry.rotation
+        infantry.translation(),
+        infantry.rotation()
     );
+    let gimbal_rel = gimbal.reparented_to(infantry.into_inner());
     add_tf_frame!(
         transform_stamped,
         odom_hdr.clone(),
         "gimbal_link",
-        gimbal.translation,
-        gimbal.rotation
+        gimbal_rel.translation,
+        gimbal_rel.rotation
     );
+    let cam_rel = cam_transform.reparented_to(gimbal.into_inner());
     add_tf_frame!(
         transform_stamped,
         gimbal_hdr.clone(),
         "camera_link",
-        view_offset.0.translation,
-        Quat::IDENTITY
+        cam_rel.translation,
+        cam_rel.rotation
     );
     add_tf_frame!(
         transform_stamped,
@@ -349,7 +355,7 @@ impl Plugin for ROS2Plugin {
             })
             .add_observer(capture_frame)
             .add_systems(Last, cleanup_ros2_system)
-            .add_systems(Update, capture_rune.after(TransformSystems::Propagate))
+            .add_systems(Update, capture_rune)
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
                 while !signal_arc.load(Ordering::Acquire) {
                     node.spin_once(Duration::from_millis(10));
