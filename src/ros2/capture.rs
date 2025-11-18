@@ -2,7 +2,6 @@ use crate::ros2::plugin::MainCamera;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
-use bevy::post_process::motion_blur::MotionBlur;
 use bevy::render::view::Hdr;
 use bevy::{
     image::TextureFormatPixelInfo,
@@ -23,12 +22,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::{Instant, SystemTime};
 
 #[derive(Resource, Deref)]
-struct MainWorldReceiver(Receiver<Vec<u8>>);
+struct MainWorldReceiver(Receiver<(Vec<u8>, SystemTime)>);
 
 #[derive(Resource, Deref)]
-struct RenderWorldSender(Sender<Vec<u8>>);
+struct RenderWorldSender(Sender<(Vec<u8>, SystemTime)>);
 
 pub struct ImageCopyPlugin;
 impl Plugin for ImageCopyPlugin {
@@ -175,7 +175,7 @@ fn receive_image_from_buffer(
             .expect("Failed to poll device for map async");
         r.recv().expect("Failed to receive the map_async message");
 
-        let _ = sender.send(buffer_slice.get_mapped_range().to_vec());
+        let _ = sender.send((buffer_slice.get_mapped_range().to_vec(), SystemTime::now()));
         image_copier.buffer.unmap();
     }
 }
@@ -270,6 +270,7 @@ fn sync_camera(
 #[derive(Event)]
 pub struct Captured {
     pub image: Image,
+    pub time: SystemTime,
 }
 
 fn publish_ros_image(
@@ -279,8 +280,10 @@ fn publish_ros_image(
     mut images: ResMut<Assets<Image>>,
 ) {
     let mut image_data = Vec::new();
-    while let Ok(data) = receiver.try_recv() {
+    let mut now = SystemTime::now();
+    while let Ok((data, instant)) = receiver.try_recv() {
         image_data = data;
+        now = instant;
     }
 
     if image_data.is_empty() {
@@ -309,6 +312,9 @@ fn publish_ros_image(
                     .cloned(),
             );
         }
-        commands.trigger(Captured { image: bevy_image })
+        commands.trigger(Captured {
+            image: bevy_image,
+            time: now,
+        });
     }
 }

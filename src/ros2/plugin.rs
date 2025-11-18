@@ -14,7 +14,7 @@ use r2r::{
     Node,
 };
 use std::f32::consts::PI;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering}, Arc,
@@ -111,20 +111,74 @@ macro_rules! pose {
 }
 
 fn capture_rune(
+    camera: Single<(&GlobalTransform, &Projection), With<MainCamera>>,
+    infantry: Single<&GlobalTransform, (With<InfantryRoot>, With<LocalInfantry>)>,
+    gimbal: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryGimbal>)>,
+    _view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
+
     runes: Query<(&GlobalTransform, &PowerRune)>,
     targets: Query<(&GlobalTransform, &RuneIndex, &Name)>,
 
     clock: ResMut<RoboMasterClock>,
-
     mut tf_publisher: ResMut<TopicPublisher<GlobalTransformTopic>>,
+    mut gimbal_pose_pub: ResMut<TopicPublisher<GimbalPoseTopic>>,
+    mut odom_pose_pub: ResMut<TopicPublisher<OdomPoseTopic>>,
+    mut camera_pose_pub: ResMut<TopicPublisher<CameraPoseTopic>>,
 ) {
+    let (cam_transform, perspective) = camera.into_inner();
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
     let mut transform_stamped = vec![];
     let map_hdr = Header {
         stamp: stamp.clone(),
         frame_id: "map".to_string(),
     };
+    let odom_hdr = Header {
+        stamp: stamp.clone(),
+        frame_id: "odom".to_string(),
+    };
+    let gimbal_hdr = Header {
+        stamp: stamp.clone(),
+        frame_id: "gimbal_link".to_string(),
+    };
+    let camera_hdr = Header {
+        stamp: stamp.clone(),
+        frame_id: "camera_link".to_string(),
+    };
 
+    gimbal_pose_pub.publish(pose!(gimbal_hdr));
+    odom_pose_pub.publish(pose!(odom_hdr));
+    camera_pose_pub.publish(pose!(camera_hdr));
+
+    add_tf_frame!(
+        transform_stamped,
+        map_hdr.clone(),
+        "odom",
+        infantry.translation(),
+        infantry.rotation()
+    );
+    let gimbal_rel = gimbal.reparented_to(infantry.into_inner());
+    add_tf_frame!(
+        transform_stamped,
+        odom_hdr.clone(),
+        "gimbal_link",
+        gimbal_rel.translation,
+        gimbal_rel.rotation
+    );
+    let cam_rel = cam_transform.reparented_to(gimbal.into_inner());
+    add_tf_frame!(
+        transform_stamped,
+        gimbal_hdr.clone(),
+        "camera_link",
+        cam_rel.translation,
+        cam_rel.rotation
+    );
+    add_tf_frame!(
+        transform_stamped,
+        camera_hdr.clone(),
+        "camera_optical_frame",
+        Vec3::ZERO,
+        Quat::from_euler(EulerRot::ZYX, -PI / 2.0, PI, PI / 2.0)
+    );
     for (transform, rune) in runes {
         add_tf_frame!(
             transform_stamped,
@@ -164,41 +218,19 @@ fn capture_frame(
     ev: On<Captured>,
     camera: Single<(&GlobalTransform, &Projection), With<MainCamera>>,
 
-    infantry: Single<&GlobalTransform, (With<InfantryRoot>, With<LocalInfantry>)>,
-    gimbal: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryGimbal>)>,
-    view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
-
     clock: ResMut<RoboMasterClock>,
 
-    mut tf_publisher: ResMut<TopicPublisher<GlobalTransformTopic>>,
     mut camera_info_pub: ResMut<TopicPublisher<CameraInfoTopic>>,
     mut image_raw_pub: ResMut<TopicPublisher<ImageRawTopic>>,
     mut image_compressed_pub: ResMut<TopicPublisher<ImageCompressedTopic>>,
-    mut gimbal_pose_pub: ResMut<TopicPublisher<GimbalPoseTopic>>,
-    mut odom_pose_pub: ResMut<TopicPublisher<OdomPoseTopic>>,
-    mut camera_pose_pub: ResMut<TopicPublisher<CameraPoseTopic>>,
 ) {
     let (cam_transform, perspective) = camera.into_inner();
-    let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
-    let mut transform_stamped = vec![];
-    let map_hdr = Header {
-        stamp: stamp.clone(),
-        frame_id: "map".to_string(),
-    };
-    let odom_hdr = Header {
-        stamp: stamp.clone(),
-        frame_id: "odom".to_string(),
-    };
-    let gimbal_hdr = Header {
-        stamp: stamp.clone(),
-        frame_id: "gimbal_link".to_string(),
-    };
-    let camera_hdr = Header {
-        stamp: stamp.clone(),
-        frame_id: "camera_link".to_string(),
-    };
+    let eg = ev.time.duration_since(UNIX_EPOCH.into()).unwrap();
     let optical_frame_hdr = Header {
-        stamp: stamp.clone(),
+        stamp: r2r::builtin_interfaces::msg::Time{
+            sec: eg.as_secs() as i32,
+            nanosec: eg.subsec_nanos(),
+        },
         frame_id: "camera_optical_frame".to_string(),
     };
     let img = ev.image.clone();
@@ -206,44 +238,6 @@ fn capture_frame(
     let (camera_info, image) = compute_camera(&perspective, optical_frame_hdr.clone(), img);
     camera_info_pub.publish(camera_info);
     image_raw_pub.publish(image);
-
-    gimbal_pose_pub.publish(pose!(gimbal_hdr));
-    odom_pose_pub.publish(pose!(odom_hdr));
-    camera_pose_pub.publish(pose!(camera_hdr));
-
-    add_tf_frame!(
-        transform_stamped,
-        map_hdr.clone(),
-        "odom",
-        infantry.translation(),
-        infantry.rotation()
-    );
-    let gimbal_rel = gimbal.reparented_to(infantry.into_inner());
-    add_tf_frame!(
-        transform_stamped,
-        odom_hdr.clone(),
-        "gimbal_link",
-        gimbal_rel.translation,
-        gimbal_rel.rotation
-    );
-    let cam_rel = cam_transform.reparented_to(gimbal.into_inner());
-    add_tf_frame!(
-        transform_stamped,
-        gimbal_hdr.clone(),
-        "camera_link",
-        cam_rel.translation,
-        cam_rel.rotation
-    );
-    add_tf_frame!(
-        transform_stamped,
-        camera_hdr.clone(),
-        "camera_optical_frame",
-        Vec3::ZERO,
-        Quat::from_euler(EulerRot::ZYX, -PI / 2.0, PI, PI / 2.0)
-    );
-    tf_publisher.publish(TFMessage {
-        transforms: transform_stamped,
-    });
 }
 
 fn compute_camera(
@@ -355,7 +349,7 @@ impl Plugin for ROS2Plugin {
             })
             .add_observer(capture_frame)
             .add_systems(Last, cleanup_ros2_system)
-            .add_systems(Update, capture_rune)
+            .add_systems(Update, capture_rune.after(TransformSystems::Propagate))
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
                 while !signal_arc.load(Ordering::Acquire) {
                     node.spin_once(Duration::from_millis(10));
