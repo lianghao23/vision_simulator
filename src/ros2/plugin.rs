@@ -272,7 +272,7 @@ fn compute_camera(
             header: hdr.clone(),
             height,
             width,
-            distortion_model: "none".to_string(),
+            distortion_model: "plumb_bob".to_string(),
             d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
             k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
             p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
