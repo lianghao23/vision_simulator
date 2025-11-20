@@ -4,7 +4,6 @@ mod ros2;
 mod statistic;
 mod util;
 
-use crate::ros2::plugin::ROS2Plugin;
 use crate::{
     handler::{on_activate, on_hit},
     robomaster::power_rune::{PowerRunePlugin, PowerRuneRoot, Projectile},
@@ -20,14 +19,13 @@ use bevy::window::{CursorIcon, PresentMode, SystemCursorIcon};
 use bevy::{
     anti_alias::fxaa::Fxaa,
     input::mouse::MouseMotion,
-    post_process::motion_blur::MotionBlur,
     prelude::*,
     render::view::Hdr,
     scene::{SceneInstance, SceneInstanceReady},
 };
 use bevy_inspector_egui::bevy_egui::{EguiGlobalSettings, PrimaryEguiContext};
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 #[derive(Component)]
 struct MainCamera {
@@ -77,9 +75,6 @@ enum GameLayer {
     Environment,
 }
 
-#[derive(Component)]
-struct DisplayOnly;
-
 #[derive(Resource)]
 struct Cooldown(Timer);
 
@@ -126,9 +121,9 @@ fn main() {
             }),
             PhysicsPlugins::default(),
         ))
-        .add_plugins(ROS2Plugin::default())
+        //.add_plugins(ROS2Plugin::default())
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
-        //.add_plugins(PhysicsDebugPlugin::default())
+        .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -165,6 +160,9 @@ fn main() {
         .run();
 }
 
+#[derive(Component)]
+struct PreciousCollision(String, CollisionLayers);
+
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -183,36 +181,26 @@ fn setup(
     ));
 
     commands.spawn((
-        RigidBody::Static,
         SceneRoot(asset_server.load("GROUND_DISPLAY.glb#Scene0")),
-        CollisionMargin(0.01),
-        Restitution::ZERO,
-        ColliderConstructorHierarchy::new(ColliderConstructor::TrimeshFromMeshWithConfig(
-            TrimeshFlags::MERGE_DUPLICATE_VERTICES,
-        )),
-        CollisionLayers::new(
-            [GameLayer::Environment],
-            [
-                GameLayer::Default,
-                GameLayer::Vehicle,
-                GameLayer::ProjectileSelf,
-                GameLayer::ProjectileOther,
-            ],
+        Transform::IDENTITY,
+        PreciousCollision(
+            "GROUND_LOW".to_string(),
+            CollisionLayers::new(
+                [GameLayer::Environment],
+                [
+                    GameLayer::Default,
+                    GameLayer::Vehicle,
+                    GameLayer::ProjectileSelf,
+                    GameLayer::ProjectileOther,
+                ],
+            ),
         ),
-        Transform::IDENTITY,
-        Visibility::Hidden,
-    ));
-    commands.spawn((
-        SceneRoot(asset_server.load("GROUND_DISPLAY.glb#Scene0")),
-        Transform::IDENTITY,
-        DisplayOnly,
     ));
     commands.spawn((
         SceneRoot(asset_server.load("CALIB.glb#Scene0")),
         Transform::IDENTITY
             .with_scale(Vec3::splat(1.0))
             .with_translation(Vec3::new(1.0, 0.5, 1.0)),
-        DisplayOnly,
     ));
 
     commands.spawn((
@@ -235,7 +223,8 @@ fn setup(
 
     commands.spawn((
         RigidBody::Dynamic,
-        Collider::cuboid(0.494884, 0.433951, 0.518837),
+        Collider::cylinder(0.2593615, 0.433951),
+        CollisionMargin(0.01),
         CollisionLayers::new(
             GameLayer::Vehicle,
             [
@@ -259,7 +248,7 @@ fn setup(
 
     commands.spawn((
         RigidBody::Dynamic,
-        Collider::cuboid(0.494884, 0.433951, 0.518837),
+        Collider::cylinder(0.2593615, 0.433951),
         CollisionLayers::new(
             GameLayer::Vehicle,
             [
@@ -333,7 +322,28 @@ fn setup_vehicle(
                 }
                 match name.as_str() {
                     "BASE" => {
-                        ent.insert(InfantryChassis::default());
+                        ent.insert((InfantryChassis::default()));
+                        let mut stack = VecDeque::from([(node, name)]);
+                        let mut set = HashSet::new();
+                        while let Some((e, name)) = stack.pop_front() {
+                            if !set.insert(e) {
+                                continue;
+                            }
+                            println!("{}", name);
+                            if name.starts_with("ARMOR_") && name.len() == 7 {
+                                println!("{}", name);
+                                commands.entity(e).insert(ColliderConstructorHierarchy::new(
+                                    ColliderConstructor::TrimeshFromMeshWithConfig(
+                                        TrimeshFlags::MERGE_DUPLICATE_VERTICES,
+                                    ),
+                                ));
+                            }
+                            for (ee, n, &ChildOf(r), _) in node_query {
+                                if r == e {
+                                    stack.push_back((ee, n));
+                                }
+                            }
+                        }
                     }
                     "GIMBAL" => {
                         ent.insert(InfantryGimbal::default());
@@ -439,26 +449,37 @@ fn projectile_launch(
 fn setup_collision(
     events: On<SceneInstanceReady>,
     mut commands: Commands,
+    children: Query<&Children>,
+    name: Query<&Name>,
     root_query: Query<
-        Entity,
+        (Entity, &PreciousCollision),
         (
             Without<Collider>,
             Without<ColliderConstructorHierarchy>,
-            Without<DisplayOnly>,
+            With<PreciousCollision>,
         ),
     >,
 ) {
-    if root_query.contains(events.entity) {
-        commands
-            .entity(events.entity)
-            .insert(ColliderConstructorHierarchy::new(
-                ColliderConstructor::VoxelizedTrimeshFromMesh {
-                    voxel_size: 0.025,
-                    fill_mode: FillMode::FloodFill {
-                        detect_cavities: true,
-                    },
-                },
-            ));
+    if let Ok((_, PreciousCollision(collider, layer))) = root_query.get(events.entity) {
+        for e in children.iter_descendants(events.entity) {
+            if let Ok(name) = name.get(e) {
+                if name.to_string() == *collider {
+                    println!("{}", name);
+                    commands.entity(e).insert((
+                        ColliderConstructorHierarchy::new(
+                            ColliderConstructor::TrimeshFromMeshWithConfig(
+                                TrimeshFlags::all(),
+                            ),
+                        ),
+                        Visibility::Hidden,
+                        RigidBody::Static,
+                        CollisionMargin(0.02),
+                        Restitution::ZERO,
+                        layer.clone(),
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -514,14 +535,14 @@ fn vehicle_controls(
     let right_xz = right.with_y(0.0).normalize_or_zero();
 
     let desired_dir = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    forces.apply_linear_impulse(mass.0*dt*desired_dir * VEHICLE_ACCEL);
+    forces.apply_linear_impulse(mass.0 * dt * desired_dir * VEHICLE_ACCEL);
     let linear_vel = forces.linear_velocity();
     let current_velocity = linear_vel.length();
     if current_velocity > MAX_VEHICLE_VELOCITY {
         let brake_force = linear_vel.normalize() * (current_velocity - MAX_VEHICLE_VELOCITY) * 50.0;
-        forces.apply_linear_impulse(mass.0*dt*-brake_force);
+        forces.apply_linear_impulse(mass.0 * dt * -brake_force);
     } else if input == Vec2::ZERO {
-        forces.apply_linear_impulse(mass.0*dt*-linear_vel * 10.0);
+        forces.apply_linear_impulse(mass.0 * dt * -linear_vel * 10.0);
     }
 
     if keyboard.pressed(KeyCode::KeyQ) {
