@@ -122,9 +122,9 @@ fn main() {
             }),
             PhysicsPlugins::default(),
         ))
-        //.add_plugins(ROS2Plugin::default())
+        .add_plugins(ROS2Plugin::default())
         .add_plugins((EguiPlugin::default(), WorldInspectorPlugin::new()))
-        .add_plugins(PhysicsDebugPlugin::default())
+        //.add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(PowerRunePlugin)
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -230,7 +230,7 @@ fn setup(
             for k in ["ACTIVATED", "ACTIVE", "COMPLETED", "DISABLED"] {
                 power_rune_col.insert(
                     format!("FACE_{}_TARGET_{}_{}", i, j, k).to_string(),
-                    (trimesh.clone(), layer_env, Visibility::Visible),
+                    (voxel(0.015), layer_env, Visibility::Visible),
                 );
             }
         }
