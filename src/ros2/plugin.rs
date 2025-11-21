@@ -254,7 +254,7 @@ fn draw_circle_point(img: &mut bevy::prelude::Image, x: u32, y: u32, radius: u32
 
     for dy in -r..=r {
         for dx in -r..=r {
-            if dx*dx + dy*dy <= r2 {
+            if dx * dx + dy * dy <= r2 {
                 let px = cx + dx;
                 let py = cy + dy;
 
@@ -274,8 +274,20 @@ fn compute_camera(
 ) -> (CameraInfo, Image) {
     for (k, armors) in armor.iter() {
         for (armor_name, pos) in armors {
-            for &(x, y) in pos {
-                draw_circle_point(&mut img, x, y, 5, Color::srgb(1.0, 0.0, 0.0));
+            for (i, &(x, y)) in pos.iter().enumerate() {
+                draw_circle_point(
+                    &mut img,
+                    x,
+                    y,
+                    5,
+                    match i {
+                        0 => Color::srgb(1.0, 0.0, 0.0),
+                        1 => Color::srgb(0.0, 1.0, 0.0),
+                        2 => Color::srgb(0.0, 0.0, 1.0),
+                        3 => Color::srgb(0.0, 1.0, 1.0),
+                        _ => panic!(),
+                    },
+                );
             }
         }
     }
