@@ -1,7 +1,7 @@
 use crate::ros2::capture::{CaptureConfig, RosCaptureContext, RosCapturePlugin};
 use crate::ros2::topic::*;
 use crate::{
-    arc_mutex, publisher, robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
+    arc_mutex, publisher, robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryViewOffset,
     LocalInfantry,
 };
 use bevy::prelude::*;
@@ -26,7 +26,7 @@ pub const M_ALIGN_MAT3: Mat3 = Mat3::from_cols(
 );
 
 #[inline]
-pub fn transform(bevy_transform: Transform) -> ::r2r::geometry_msgs::msg::Transform {
+pub fn transform(bevy_transform: Transform) -> r2r::geometry_msgs::msg::Transform {
     let align_rot_mat = M_ALIGN_MAT3;
     let align_quat = Quat::from_mat3(&align_rot_mat);
     let new_rotation = align_quat * bevy_transform.rotation * align_quat.inverse();
@@ -109,8 +109,7 @@ macro_rules! pose {
 }
 
 fn capture_rune(
-    camera: Single<(&GlobalTransform, &Projection), With<MainCamera>>,
-    infantry: Single<&GlobalTransform, (With<InfantryRoot>, With<LocalInfantry>)>,
+    camera: Single<&GlobalTransform, With<MainCamera>>,
     gimbal: Single<&GlobalTransform, (With<LocalInfantry>, With<InfantryGimbal>)>,
     _view_offset: Single<&InfantryViewOffset, With<LocalInfantry>>,
 
@@ -118,12 +117,12 @@ fn capture_rune(
     targets: Query<(&GlobalTransform, &RuneIndex, &Name)>,
 
     clock: ResMut<RoboMasterClock>,
-    mut tf_publisher: ResMut<TopicPublisher<GlobalTransformTopic>>,
-    mut gimbal_pose_pub: ResMut<TopicPublisher<GimbalPoseTopic>>,
-    mut odom_pose_pub: ResMut<TopicPublisher<OdomPoseTopic>>,
-    mut camera_pose_pub: ResMut<TopicPublisher<CameraPoseTopic>>,
+    tf_publisher: ResMut<TopicPublisher<GlobalTransformTopic>>,
+    gimbal_pose_pub: ResMut<TopicPublisher<GimbalPoseTopic>>,
+    odom_pose_pub: ResMut<TopicPublisher<OdomPoseTopic>>,
+    camera_pose_pub: ResMut<TopicPublisher<CameraPoseTopic>>,
 ) {
-    let (cam_transform, perspective) = camera.into_inner();
+    let cam_transform = camera.into_inner();
     let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
     let mut transform_stamped = vec![];
     let map_hdr = Header {

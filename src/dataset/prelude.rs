@@ -142,7 +142,6 @@ pub struct ArmorOnScreen(pub HashMap<Entity, HashMap<String, [(u32, u32); 4]>>);
 
 fn query(
     children: Query<&Children>,
-    names: Query<&Name>,
     global_transform: Query<(&GlobalTransform, &Mesh3d, &Armor)>,
     infantry: Query<Entity, (With<InfantryRoot>, Without<LocalInfantry>)>,
     camera: Single<(&Projection, &GlobalTransform), With<CaptureCamera>>,

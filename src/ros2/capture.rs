@@ -1,6 +1,5 @@
 use crate::ros2::plugin::MainCamera;
 use crate::ros2::topic::{CameraInfoTopic, ImageCompressedTopic, ImageRawTopic, TopicPublisher};
-use crate::util::image::compress_image;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
@@ -43,7 +42,6 @@ struct ImageCopiers(pub Vec<ImageCopier>);
 #[derive(Clone, Component)]
 struct ImageCopier {
     buffer: Buffer,
-    count: Arc<Mutex<u32>>,
     copying: Arc<AtomicBool>,
     enabled: Arc<AtomicBool>,
     src_image: Handle<Image>,
@@ -69,7 +67,6 @@ impl ImageCopier {
             src_image,
             copying: Arc::new(AtomicBool::new(false)),
             enabled: Arc::new(AtomicBool::new(true)),
-            count: Arc::new(Mutex::new(0)),
         }
     }
 

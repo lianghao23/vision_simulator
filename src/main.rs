@@ -343,55 +343,55 @@ fn setup_vehicle(
     let mut despawn = HashSet::new();
 
     for (node, name, &ChildOf(secondary), transform) in node_query {
-        if let Ok(&ChildOf(root2)) = secondary_query.get(secondary) {
-            if root == root2 {
-                despawn.insert(secondary);
-                commands.entity(secondary).remove_child(node);
-                commands.entity(root).add_child(node);
-                let mut ent = commands.entity(node);
-                if is_local {
-                    ent.insert(LocalInfantry);
-                }
-                match name.as_str() {
-                    "BASE" => {
-                        ent.insert((InfantryChassis::default()));
-                        let mut stack = VecDeque::from([(node, name)]);
-                        let mut set = HashSet::new();
-                        while let Some((e, name)) = stack.pop_front() {
-                            if !set.insert(e) {
-                                continue;
-                            }
-                            println!("{}", name);
-                            if name.starts_with("ARMOR_") && name.ends_with("_P") {
-                                println!("{}", name);
-                                insert_all_child(&mut commands, e, &children, || {
-                                    Armor(name.to_string())
-                                });
-                                commands.entity(e).insert(ColliderConstructorHierarchy::new(
-                                    ColliderConstructor::TrimeshFromMeshWithConfig(
-                                        TrimeshFlags::MERGE_DUPLICATE_VERTICES,
-                                    ),
-                                ));
-                            }
-                            for (ee, n, &ChildOf(r), _) in node_query {
-                                if r == e {
-                                    stack.push_back((ee, n));
-                                }
-                            }
+        let Ok(&ChildOf(root2)) = secondary_query.get(secondary) else {
+            continue;
+        };
+        if root != root2 {
+            continue;
+        }
+        despawn.insert(secondary);
+        commands.entity(secondary).remove_child(node);
+        commands.entity(root).add_child(node);
+        let mut ent = commands.entity(node);
+        if is_local {
+            ent.insert(LocalInfantry);
+        }
+        match name.as_str() {
+            "BASE" => {
+                ent.insert(InfantryChassis::default());
+                let mut stack = VecDeque::from([(node, name)]);
+                let mut set = HashSet::new();
+                while let Some((e, name)) = stack.pop_front() {
+                    if !set.insert(e) {
+                        continue;
+                    }
+                    println!("{}", name);
+                    if name.starts_with("ARMOR_") && name.ends_with("_P") {
+                        println!("{}", name);
+                        insert_all_child(&mut commands, e, &children, || Armor(name.to_string()));
+                        commands.entity(e).insert(ColliderConstructorHierarchy::new(
+                            ColliderConstructor::TrimeshFromMeshWithConfig(
+                                TrimeshFlags::MERGE_DUPLICATE_VERTICES,
+                            ),
+                        ));
+                    }
+                    for (ee, n, &ChildOf(r), _) in node_query {
+                        if r == e {
+                            stack.push_back((ee, n));
                         }
                     }
-                    "GIMBAL" => {
-                        ent.insert(InfantryGimbal::default());
-                    }
-                    "SHOT_DIRECTION" => {
-                        ent.insert(InfantryLaunchOffset(transform.clone()));
-                    }
-                    "CAM_DIRECTION" => {
-                        ent.insert(InfantryViewOffset(transform.clone()));
-                    }
-                    _ => {}
                 }
             }
+            "GIMBAL" => {
+                ent.insert(InfantryGimbal::default());
+            }
+            "SHOT_DIRECTION" => {
+                ent.insert(InfantryLaunchOffset(transform.clone()));
+            }
+            "CAM_DIRECTION" => {
+                ent.insert(InfantryViewOffset(transform.clone()));
+            }
+            _ => {}
         }
     }
 
@@ -503,10 +503,10 @@ fn setup_collision(
                 Restitution::ZERO,
                 constructor.clone(),
                 CollisionMargin(0.02),
-                layer.clone(),
+                *layer,
             ));
             if visibility == Visibility::Hidden {
-                commands.entity(e).insert(visibility.clone());
+                commands.entity(e).insert(*visibility);
             }
         }
     }
