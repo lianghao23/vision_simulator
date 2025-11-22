@@ -499,6 +499,7 @@ fn setup_collision(
             println!("{}", name);
             commands.entity(e).insert((
                 RigidBody::Static,
+                Mass(0.0),
                 Restitution::ZERO,
                 constructor.clone(),
                 CollisionMargin(0.02),
