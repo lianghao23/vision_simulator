@@ -1,4 +1,6 @@
 use crate::ros2::plugin::MainCamera;
+use crate::ros2::topic::{CameraInfoTopic, ImageCompressedTopic, ImageRawTopic, TopicPublisher};
+use crate::util::image::compress_image;
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::camera::Exposure;
 use bevy::post_process::bloom::Bloom;
@@ -18,41 +20,20 @@ use bevy::{
         RenderSystems,
     },
 };
-use crossbeam_channel::{Receiver, Sender};
-use std::ops::Add;
+use r2r::sensor_msgs::msg::{CameraInfo, RegionOfInterest};
+use r2r::std_msgs::msg::Header;
+use r2r::Clock;
 use std::sync::{
     atomic::{AtomicBool, Ordering}, Arc,
     Mutex,
 };
-use std::time::SystemTime;
 
-#[derive(Resource, Deref)]
-struct MainWorldReceiver(Receiver<(Vec<u8>, SystemTime)>);
-
-#[derive(Resource, Deref)]
-struct RenderWorldSender(Arc<Sender<(Vec<u8>, SystemTime)>>);
-
-pub struct ImageCopyPlugin;
-impl Plugin for ImageCopyPlugin {
-    fn build(&self, app: &mut App) {
-        let (s, r) = crossbeam_channel::unbounded();
-
-        let render_app = app
-            .insert_resource(MainWorldReceiver(r))
-            .sub_app_mut(RenderApp);
-
-        let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        graph.add_node(ImageCopy, ImageCopyDriver);
-        graph.add_node_edge(bevy::render::graph::CameraDriverLabel, ImageCopy);
-
-        render_app
-            .insert_resource(RenderWorldSender(Arc::new(s)))
-            .add_systems(ExtractSchedule, image_copy_extract)
-            .add_systems(
-                Render,
-                receive_image_from_buffer.after(RenderSystems::Render),
-            );
-    }
+#[derive(Resource, Clone)]
+pub struct CaptureConfig {
+    pub width: u32,
+    pub height: u32,
+    pub texture_format: TextureFormat,
+    pub fov_y: f32,
 }
 
 #[derive(Clone, Default, Resource, Deref, DerefMut)]
@@ -121,7 +102,7 @@ impl render_graph::Node for ImageCopyDriver {
             .unwrap();
 
         for image_copier in image_copiers.iter() {
-            if !image_copier.enabled() {
+            if !image_copier.enabled() || image_copier.copying.load(Ordering::Acquire) {
                 continue;
             }
             let src_image = gpu_images.get(&image_copier.src_image).unwrap();
@@ -160,8 +141,12 @@ impl render_graph::Node for ImageCopyDriver {
 fn receive_image_from_buffer(
     image_copiers: Res<ImageCopiers>,
     render_device: Res<RenderDevice>,
-    sender: Res<RenderWorldSender>,
+    config: Res<CaptureConfig>,
+    ctx: Res<RosCaptureContext>,
 ) {
+    let ctx = Arc::new(ctx.clone());
+    let config = Arc::new(config.clone());
+    let (width, height, texture_format) = (config.width, config.height, config.texture_format);
     for image_copier in image_copiers.0.iter() {
         if !image_copier.enabled() {
             continue;
@@ -172,58 +157,102 @@ fn receive_image_from_buffer(
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            let sender = sender.clone();
             let render_device = render_device.clone();
             let image_copier = image_copier.clone();
-            let _ = AsyncComputeTaskPool::get().spawn(async move {
-                let buffer_slice = image_copier.buffer.slice(..);
-                let (s, r) = crossbeam_channel::bounded(1);
+            let ctx = ctx.clone();
+            let config = config.clone();
+            AsyncComputeTaskPool::get()
+                .spawn(async move {
+                    let buffer_slice = image_copier.buffer.slice(..);
+                    let (s, r) = crossbeam_channel::bounded(1);
 
-                buffer_slice.map_async(MapMode::Read, move |r| match r {
-                    Ok(r) => s.send(r).expect("Failed to send map update"),
-                    Err(err) => panic!("Failed to map buffer {err}"),
-                });
+                    buffer_slice.map_async(MapMode::Read, move |r| match r {
+                        Ok(r) => s.send(r).expect("Failed to send map update"),
+                        Err(err) => panic!("Failed to map buffer {err}"),
+                    });
 
-                render_device
-                    .poll(PollType::Wait)
-                    .expect("Failed to poll device for map async");
-                r.recv().expect("Failed to receive the map_async message");
+                    render_device
+                        .poll(PollType::Wait)
+                        .expect("Failed to poll device for map async");
+                    r.recv().expect("Failed to receive the map_async message");
 
-                sender
-                    .send((buffer_slice.get_mapped_range().to_vec(), SystemTime::now()))
-                    .expect("Failed to send buffer_slice");
-                image_copier.buffer.unmap();
-            });
+                    let mut image_data = buffer_slice.get_mapped_range().to_vec();
+                    image_copier.buffer.unmap();
+                    image_copier.copying.store(false, Ordering::Release);
+
+                    let image_data = {
+                        let row_bytes = width as usize * texture_format.pixel_size().unwrap();
+                        let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
+                        if row_bytes != aligned_row_bytes {
+                            image_data = image_data
+                                .chunks(aligned_row_bytes)
+                                .take(height as usize)
+                                .flat_map(|row| &row[..row_bytes.min(row.len())])
+                                .cloned()
+                                .collect();
+                        }
+                        let mut bevy_image =
+                            Image::new_target_texture(width, height, texture_format);
+                        bevy_image.data = Some(image_data);
+                        bevy_image.try_into_dynamic().unwrap().to_rgb8().into_raw()
+                    };
+                    let optical_frame_hdr = Header {
+                        stamp: Clock::to_builtin_time(
+                            &ctx.clock.lock().unwrap().get_now().unwrap(),
+                        ),
+                        frame_id: "camera_optical_frame".to_string(),
+                    };
+                    //image_compressed_pub.publish(compress_image(optical_frame_hdr.clone(), &img));
+                    let (camera_info, image) = compute_camera(
+                        config.fov_y,
+                        optical_frame_hdr,
+                        config.width,
+                        config.height,
+                        image_data,
+                    );
+                    ctx.camera_info.publish(camera_info);
+                    ctx.image_raw.publish(image);
+                   // ctx.image_compressed.publish(compressed);
+                })
+                .detach();
         }
     }
 }
 
+#[derive(Resource, Clone)]
+pub struct RosCaptureContext {
+    pub clock: Arc<Mutex<Clock>>,
+    pub camera_info: Arc<TopicPublisher<CameraInfoTopic>>,
+    pub image_raw: Arc<TopicPublisher<ImageRawTopic>>,
+    pub image_compressed: Arc<TopicPublisher<ImageCompressedTopic>>,
+}
+
 pub struct RosCapturePlugin {
     pub config: CaptureConfig,
+    pub context: RosCaptureContext,
 }
 
 impl Plugin for RosCapturePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(ImageCopyPlugin);
-
         app.insert_resource(self.config.clone())
-            .add_systems(Update, sync_camera);
+            .add_systems(Update, sync_camera)
+            .add_systems(Startup, setup_capture_scene);
+        let render_app = app.sub_app_mut(RenderApp);
 
-        app.add_systems(Startup, setup_capture_scene);
+        let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
+        graph.add_node(ImageCopy, ImageCopyDriver);
+        graph.add_node_edge(bevy::render::graph::CameraDriverLabel, ImageCopy);
 
-        app.add_systems(PostUpdate, publish_ros_image);
+        render_app
+            .insert_resource(self.config.clone())
+            .insert_resource(self.context.clone())
+            .add_systems(ExtractSchedule, image_copy_extract)
+            .add_systems(
+                Render,
+                receive_image_from_buffer.after(RenderSystems::Render),
+            );
     }
 }
-
-#[derive(Resource, Clone)]
-pub struct CaptureConfig {
-    pub width: u32,
-    pub height: u32,
-    pub fov: f32,
-}
-
-#[derive(Component, Deref, DerefMut)]
-struct CpuImageTarget(Handle<Image>);
 
 #[derive(Component)]
 pub struct CaptureCamera;
@@ -240,20 +269,15 @@ fn setup_capture_scene(
         ..Default::default()
     };
     let mut render_target_image =
-        Image::new_target_texture(size.width, size.height, TextureFormat::bevy_default());
+        Image::new_target_texture(size.width, size.height, config.texture_format);
     render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let render_target_handle = images.add(render_target_image);
-
-    let cpu_image =
-        Image::new_target_texture(size.width, size.height, TextureFormat::bevy_default());
-    let cpu_image_handle = images.add(cpu_image);
 
     commands.spawn(ImageCopier::new(
         render_target_handle.clone(),
         size,
         &render_device,
     ));
-    commands.spawn(CpuImageTarget(cpu_image_handle));
 
     commands.spawn((
         Camera3d::default(),
@@ -263,7 +287,7 @@ fn setup_capture_scene(
             ..default()
         },
         Projection::Perspective(PerspectiveProjection {
-            fov: config.fov,
+            fov: config.fov_y,
             near: 0.1,
             far: 500000000.0,
             ..default()
@@ -285,54 +309,58 @@ fn sync_camera(
     our.rotation = target.rotation;
 }
 
-#[derive(Event)]
-pub struct Captured {
-    pub image: Image,
-    pub time: SystemTime,
-}
+fn compute_camera(
+    fov_y: f32,
+    hdr: Header,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+) -> (CameraInfo, r2r::sensor_msgs::msg::Image) {
+    let fov_y = fov_y as f64;
+    let (width, height) = (width, height);
 
-fn publish_ros_image(
-    mut commands: Commands,
-    cpu_image_targets: Query<&CpuImageTarget>,
-    receiver: Res<MainWorldReceiver>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    let mut image_data = Vec::new();
-    let mut now = SystemTime::now();
-    while let Ok((data, instant)) = receiver.try_recv() {
-        image_data = data;
-        now = instant;
-    }
+    let (fov_y, fov_x) = {
+        let aspect = width as f64 / height as f64;
+        let fov_x = 2.0 * ((fov_y / 2.0).tan() * aspect).atan();
+        (fov_y, fov_x)
+    };
 
-    if image_data.is_empty() {
-        return;
-    }
+    let f_x = width as f64 / (2.0 * (fov_x / 2.0).tan());
+    let f_y = height as f64 / (2.0 * (fov_y / 2.0).tan());
 
-    if let Some(target) = cpu_image_targets.iter().next() {
-        let mut bevy_image = images.get_mut(target.id()).unwrap().clone();
+    let c_x = width as f64 / 2.0;
+    let c_y = height as f64 / 2.0;
 
-        let row_bytes = bevy_image.width() as usize
-            * bevy_image.texture_descriptor.format.pixel_size().unwrap();
-        let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
+    // Removed x-axis flip; rely on optical rotation instead
 
-        let hei = bevy_image.height();
-        let target_data = bevy_image.data.get_or_insert_with(Vec::new);
-
-        if row_bytes == aligned_row_bytes {
-            target_data.clone_from(&image_data);
-        } else {
-            target_data.clear();
-            target_data.extend(
-                image_data
-                    .chunks(aligned_row_bytes)
-                    .take(hei as usize)
-                    .flat_map(|row| &row[..row_bytes.min(row.len())])
-                    .cloned(),
-            );
-        }
-        commands.trigger(Captured {
-            image: bevy_image,
-            time: now,
-        });
-    }
+    (
+        CameraInfo {
+            header: hdr.clone(),
+            height,
+            width,
+            distortion_model: "plumb_bob".to_string(),
+            d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
+            k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
+            p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
+            r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            binning_x: 0,
+            binning_y: 0,
+            roi: RegionOfInterest {
+                x_offset: 0,
+                y_offset: 0,
+                height,
+                width,
+                do_rectify: true,
+            },
+        },
+        r2r::sensor_msgs::msg::Image {
+            header: hdr,
+            height,
+            width,
+            encoding: "rgb8".to_string(),
+            is_bigendian: 0,
+            step: width * 3,
+            data,
+        },
+    )
 }

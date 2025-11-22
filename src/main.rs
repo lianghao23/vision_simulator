@@ -136,7 +136,7 @@ fn main() {
         .add_plugins(DatasetPlugin)
         .insert_resource(CameraMode(FollowingType::Robot))
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
-        .insert_resource(SubstepCount(20))
+        .insert_resource(SubstepCount(10))
         .insert_resource(Cooldown(Timer::from_seconds(0.1, TimerMode::Once)))
         .add_systems(Startup, (setup, setup_projectile))
         .add_observer(setup_vehicle)

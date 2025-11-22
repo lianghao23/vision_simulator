@@ -1,21 +1,16 @@
-use crate::dataset::prelude::ArmorOnScreen;
-use crate::ros2::capture::{CaptureConfig, Captured, RosCapturePlugin};
+use crate::ros2::capture::{CaptureConfig, RosCaptureContext, RosCapturePlugin};
 use crate::ros2::topic::*;
 use crate::{
     arc_mutex, publisher, robomaster::power_rune::{PowerRune, RuneIndex}, InfantryGimbal, InfantryRoot, InfantryViewOffset,
     LocalInfantry,
 };
 use bevy::prelude::*;
+use bevy::render::render_resource::TextureFormat;
 use r2r::geometry_msgs::msg::{Pose, PoseStamped};
 use r2r::ClockType::SystemTime;
-use r2r::{
-    sensor_msgs::msg::{CameraInfo, Image, RegionOfInterest}, std_msgs::msg::Header, tf2_msgs::msg::TFMessage,
-    Clock,
-    Context,
-    Node,
-};
+use r2r::{std_msgs::msg::Header, tf2_msgs::msg::TFMessage, Clock, Context, Node};
 use std::f32::consts::PI;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering}, Arc,
@@ -216,136 +211,6 @@ fn capture_rune(
     });
 }
 
-fn capture_frame(
-    ev: On<Captured>,
-    camera: Single<(&GlobalTransform, &Projection), With<MainCamera>>,
-
-    clock: ResMut<RoboMasterClock>,
-
-    mut camera_info_pub: ResMut<TopicPublisher<CameraInfoTopic>>,
-    mut image_raw_pub: ResMut<TopicPublisher<ImageRawTopic>>,
-    mut image_compressed_pub: ResMut<TopicPublisher<ImageCompressedTopic>>,
-    mut armor: Res<ArmorOnScreen>,
-) {
-    let (cam_transform, perspective) = camera.into_inner();
-    let eg = ev.time.duration_since(UNIX_EPOCH.into()).unwrap();
-    let optical_frame_hdr = Header {
-        stamp: r2r::builtin_interfaces::msg::Time {
-            sec: eg.as_secs() as i32,
-            nanosec: eg.subsec_nanos(),
-        },
-        frame_id: "camera_optical_frame".to_string(),
-    };
-    let img = ev.image.clone();
-    //image_compressed_pub.publish(compress_image(optical_frame_hdr.clone(), &img));
-    let (camera_info, image) = compute_camera(&perspective, optical_frame_hdr.clone(), img, &armor);
-    camera_info_pub.publish(camera_info);
-    image_raw_pub.publish(image);
-}
-
-fn draw_circle_point(img: &mut bevy::prelude::Image, x: u32, y: u32, radius: u32, color: Color) {
-    let width = img.width();
-    let height = img.height();
-
-    let r = radius as i32;
-    let cx = x as i32;
-    let cy = y as i32;
-    let r2 = r * r;
-
-    for dy in -r..=r {
-        for dx in -r..=r {
-            if dx * dx + dy * dy <= r2 {
-                let px = cx + dx;
-                let py = cy + dy;
-
-                if px >= 0 && py >= 0 && px < width as i32 && py < height as i32 {
-                    img.set_color_at(px as u32, py as u32, color).unwrap();
-                }
-            }
-        }
-    }
-}
-
-fn compute_camera(
-    perspective: &Projection,
-    hdr: Header,
-    mut img: bevy::prelude::Image,
-    armor: &ArmorOnScreen,
-) -> (CameraInfo, Image) {
-    for (k, armors) in armor.iter() {
-        for (armor_name, pos) in armors {
-            for (i, &(x, y)) in pos.iter().enumerate() {
-                draw_circle_point(
-                    &mut img,
-                    x,
-                    y,
-                    5,
-                    match i {
-                        0 => Color::srgb(1.0, 0.0, 0.0),
-                        1 => Color::srgb(0.0, 1.0, 0.0),
-                        2 => Color::srgb(0.0, 0.0, 1.0),
-                        3 => Color::srgb(0.0, 1.0, 1.0),
-                        _ => panic!(),
-                    },
-                );
-            }
-        }
-    }
-    let dyn_img = img.try_into_dynamic().unwrap();
-    let rgb8 = dyn_img.to_rgb8();
-
-    let (width, height) = (rgb8.width(), rgb8.height());
-
-    let (fov_y, fov_x) = match perspective {
-        Projection::Perspective(p) => {
-            let fov_y = p.fov as f64;
-            let aspect = width as f64 / height as f64;
-            let fov_x = 2.0 * ((fov_y / 2.0).tan() * aspect).atan();
-            (fov_y, fov_x)
-        }
-        _ => todo!(),
-    };
-
-    let f_x = width as f64 / (2.0 * (fov_x / 2.0).tan());
-    let f_y = height as f64 / (2.0 * (fov_y / 2.0).tan());
-
-    let c_x = width as f64 / 2.0;
-    let c_y = height as f64 / 2.0;
-
-    // Removed x-axis flip; rely on optical rotation instead
-
-    (
-        CameraInfo {
-            header: hdr.clone(),
-            height,
-            width,
-            distortion_model: "plumb_bob".to_string(),
-            d: vec![0.000, 0.000, 0.000, 0.000, 0.000],
-            k: vec![f_x, 0.0, c_x, 0.0, f_y, c_y, 0.0, 0.0, 1.0],
-            p: vec![f_x, 0.0, c_x, 0.0, 0.0, f_y, c_y, 0.0, 0.0, 0.0, 1.0, 0.0],
-            r: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            binning_x: 0,
-            binning_y: 0,
-            roi: RegionOfInterest {
-                x_offset: 0,
-                y_offset: 0,
-                height,
-                width,
-                do_rectify: true,
-            },
-        },
-        Image {
-            header: hdr,
-            height: rgb8.height(),
-            width: rgb8.width(),
-            encoding: "rgb8".to_string(),
-            is_bigendian: 0,
-            step: rgb8.width() * 3,
-            data: rgb8.into_raw(),
-        },
-    )
-}
-
 fn cleanup_ros2_system(
     mut exit: MessageReader<AppExit>,
     stop_signal: Res<StopSignal>,
@@ -370,18 +235,19 @@ impl Plugin for ROS2Plugin {
     fn build(&self, app: &mut App) {
         let mut node = Node::create(Context::create().unwrap(), "simulator", "robomaster").unwrap();
         let signal_arc = Arc::new(AtomicBool::new(false));
+
         publisher!(
             signal_arc,
             app,
             node,
-            CameraInfoTopic,
-            ImageRawTopic,
-            ImageCompressedTopic,
             GlobalTransformTopic,
             GimbalPoseTopic,
             OdomPoseTopic,
             CameraPoseTopic
         );
+        let camera_info = Arc::new(publisher!(signal_arc, node, CameraInfoTopic));
+        let image_raw = Arc::new(publisher!(signal_arc, node, ImageRawTopic));
+        let image_compressed = Arc::new(publisher!(signal_arc, node, ImageCompressedTopic));
 
         let clock = arc_mutex!(Clock::create(SystemTime).unwrap());
 
@@ -391,15 +257,21 @@ impl Plugin for ROS2Plugin {
                 config: CaptureConfig {
                     width: 1440,
                     height: 1080,
-                    fov: PI / 180.0 * 45.0,
+                    texture_format: TextureFormat::bevy_default(),
+                    fov_y: PI / 180.0 * 45.0,
+                },
+                context: RosCaptureContext {
+                    clock,
+                    camera_info,
+                    image_raw,
+                    image_compressed,
                 },
             })
-            .add_observer(capture_frame)
             .add_systems(Last, cleanup_ros2_system)
             .add_systems(Update, capture_rune.after(TransformSystems::Propagate))
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {
                 while !signal_arc.load(Ordering::Acquire) {
-                    node.spin_once(Duration::from_millis(100));
+                    node.spin_once(Duration::from_millis(1000));
                 }
             }))));
     }

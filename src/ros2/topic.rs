@@ -1,44 +1,24 @@
-use bevy::prelude::{error, Resource};
+use bevy::prelude::Resource;
 use r2r::geometry_msgs::msg::PoseStamped;
 use r2r::qos::{DurabilityPolicy, HistoryPolicy, LivelinessPolicy, ReliabilityPolicy};
 use r2r::sensor_msgs::msg::{CameraInfo, CompressedImage, Image};
 use r2r::tf2_msgs::msg::TFMessage;
 use r2r::{QosProfile, WrappedTypesupport};
 use std::sync::mpsc::SyncSender;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Resource)]
 pub struct TopicPublisher<T: RosTopic> {
     sender: SyncSender<T::T>,
-    start: Instant,
-    interval: Duration,
-    count: u32,
 }
 
 impl<T: RosTopic> TopicPublisher<T> {
-    pub(crate) fn new(sender: SyncSender<T::T>, freq: f64) -> Self {
-        let interval = Duration::from_secs_f64(1.0 / freq);
-        TopicPublisher {
-            sender,
-            start: Instant::now(),
-            interval,
-            count: 0,
-        }
+    pub(crate) fn new(sender: SyncSender<T::T>) -> Self {
+        TopicPublisher { sender }
     }
 
-    pub fn publish(&mut self, message: T::T) {
-        let now = Instant::now();
-        let ideal_time = self.start + self.interval * self.count;
-        if now >= ideal_time {
-            if let Err(err)=self.sender.try_send(message){
-                error!("Topic send error {:?}", err);
-            }
-            self.count += 1;
-            if self.count > 1 << 30 {
-                self.count = 0;
-                self.start = now;
-            }
-        }
+    pub fn publish(&self, message: T::T) {
+        let _ = self.sender.try_send(message);
     }
 }
 
@@ -59,16 +39,14 @@ macro_rules! publisher {
             (receiver, sender, publisher)
         }
     };
-    ($atomic:expr, $app:ident, $node:ident, $topic:ty) => {
+    ($atomic:expr, $node:ident, $topic:ty) => {{
         let atomic = $atomic.clone();
         let (receiver,sender,publisher) = publisher!($node, $topic);
-        $app.insert_resource(crate::ros2::topic::TopicPublisher::<$topic>::new(sender, <$topic>::FREQUENCY));
-
         ::std::thread::spawn(move || {
             while !atomic.load(::std::sync::atomic::Ordering::Acquire) {
                 let mut did_work = false;
                 loop {
-                    match receiver.try_recv() {
+                    match receiver.recv_timeout(Duration::from_secs(1)) {
                         Ok(m) => {
                             let mut sent = false;
                             while !sent {
@@ -81,8 +59,8 @@ macro_rules! publisher {
                             }
                             did_work = true;
                         }
-                        Err(::std::sync::mpsc::TryRecvError::Empty) => break,
-                        Err(::std::sync::mpsc::TryRecvError::Disconnected) => break,
+                        Err(::std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(::std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
                 if !did_work {
@@ -90,11 +68,12 @@ macro_rules! publisher {
                 }
             }
         });
-    };
+        crate::ros2::topic::TopicPublisher::<$topic>::new(sender)
+    }};
 
     ($atomic:expr, $app:ident, $node:ident, $($topic:ty),* $(,)?) => {
         $(
-            publisher!($atomic, $app, $node, $topic);
+            $app.insert_resource(publisher!($atomic, $node, $topic));
         )*
     };
 }
@@ -102,22 +81,20 @@ macro_rules! publisher {
 pub trait RosTopic {
     type T: WrappedTypesupport + 'static;
     const TOPIC: &'static str;
-    const FREQUENCY: f64;
     const QOS: QosProfile;
 }
 
 macro_rules! define_topic {
-    ($topic:ident, $typ:ty, $url:expr, $freq:expr, $qos:expr) => {
+    ($topic:ident, $typ:ty, $url:expr, $qos:expr) => {
         pub struct $topic;
         impl RosTopic for $topic {
             type T = $typ;
             const TOPIC: &'static str = $url;
-            const FREQUENCY: f64 = $freq;
             const QOS: QosProfile = $qos;
         }
     };
-    ($topic:ident, $typ:ty, $url:expr, $freq:expr) => {
-        define_topic!($topic, $typ, $url, $freq, ::r2r::QosProfile::default());
+    ($topic:ident, $typ:ty, $url:expr) => {
+        define_topic!($topic, $typ, $url, ::r2r::QosProfile::default());
     };
 }
 
@@ -133,16 +110,11 @@ const SENSOR_QOS: QosProfile = QosProfile {
     avoid_ros_namespace_conventions: false,
 };
 
-define_topic!(CameraInfoTopic, CameraInfo, "/camera_info", 60.0);
-define_topic!(ImageRawTopic, Image, "/image_raw", 60.0);
-define_topic!(
-    ImageCompressedTopic,
-    CompressedImage,
-    "/image_compressed",
-    30.0
-);
-define_topic!(GlobalTransformTopic, TFMessage, "/tf", 60.0);
+define_topic!(CameraInfoTopic, CameraInfo, "/camera_info");
+define_topic!(ImageRawTopic, Image, "/image_raw");
+define_topic!(ImageCompressedTopic, CompressedImage, "/image_compressed");
+define_topic!(GlobalTransformTopic, TFMessage, "/tf");
 
-define_topic!(GimbalPoseTopic, PoseStamped, "/gimbal_pose", 60.0);
-define_topic!(OdomPoseTopic, PoseStamped, "/odom_pose", 60.0);
-define_topic!(CameraPoseTopic, PoseStamped, "/camera_pose", 60.0);
+define_topic!(GimbalPoseTopic, PoseStamped, "/gimbal_pose");
+define_topic!(OdomPoseTopic, PoseStamped, "/odom_pose");
+define_topic!(CameraPoseTopic, PoseStamped, "/camera_pose");
