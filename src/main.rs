@@ -4,6 +4,7 @@ mod robomaster;
 mod ros2;
 mod statistic;
 mod util;
+mod vision_msgs;
 
 use crate::dataset::prelude::DatasetPlugin;
 use crate::ros2::plugin::ROS2Plugin;

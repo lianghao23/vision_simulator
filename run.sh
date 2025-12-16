@@ -1,14 +1,7 @@
 #!/bin/bash
-set -e
-
-# Source ROS 2 environment
 source /opt/ros/humble/setup.bash
-
 # Source the hnurm_interfaces workspace
 if [ -f "$HOME/yuelu/install/setup.bash" ]; then
     source $HOME/yuelu/install/setup.bash
 fi
-
-# Build and run the Rust simulator
-cargo build --release
-cargo run --release --verbose
+cargo run --release

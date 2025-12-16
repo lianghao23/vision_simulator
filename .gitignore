@@ -7,3 +7,7 @@ assets/*.blend1
 .idea
 screenshot-*.png
 dataset
+
+build/
+log/
+install/

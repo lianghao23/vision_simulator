@@ -104,3 +104,7 @@ define_topic!(GlobalTransformTopic, TFMessage, "/tf");
 define_topic!(GimbalPoseTopic, PoseStamped, "/gimbal_pose");
 define_topic!(OdomPoseTopic, PoseStamped, "/odom_pose");
 define_topic!(CameraPoseTopic, PoseStamped, "/camera_pose");
+
+// Vision custom message topics (using hnurm_interfaces)
+define_topic!(VisionRecvDataTopic, r2r::hnurm_interfaces::msg::VisionRecvData, "/vision_recv_data");
+define_topic!(VisionSendDataTopic, r2r::hnurm_interfaces::msg::VisionSendData, "/vision_send_data");
