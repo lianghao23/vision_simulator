@@ -96,72 +96,24 @@ impl Default for VisionConfig {
     }
 }
 
-/// Simple smooth controller for gimbal motion
-/// Uses exponential smoothing with velocity limiting, more stable than PID for vision tracking
-#[derive(Clone)]
-struct SmoothController {
-    smoothing_factor: f32, // Smoothing factor (0-1), higher = faster response
-    deadband: f32,         // Deadband threshold in radians
-}
-
-impl SmoothController {
-    fn new(smoothing_factor: f32) -> Self {
-        Self {
-            smoothing_factor: smoothing_factor.clamp(0.0, 1.0),
-            deadband: 0.002, // ~0.11 degrees deadband
-        }
-    }
-
-    /// Calculate desired angular velocity based on error
-    fn update(&self, current: f32, target: f32, dt: f32) -> f32 {
-        let error = target - current;
-
-        // Apply deadband to prevent jitter near target
-        if error.abs() < self.deadband {
-            return 0.0;
-        }
-
-        // Calculate desired velocity: larger error = faster speed
-        error * self.smoothing_factor / dt.max(0.001)
-    }
-
-    fn reset(&mut self) {
-        // No state to reset for this simple controller
-    }
-}
-
-/// Resource to store gimbal control commands received from vision_send_data topic
-#[derive(Resource, Clone)]
-pub struct GimbalControl {
-    pub target_pitch: f32,
-    pub target_yaw: f32,
-    pub target_distance: f32,
-    pub vel_x: f32,
-    pub vel_y: f32,
-    pub vel_yaw: f32,
+/// Auto-aim mode control (toggled by T key)
+#[derive(Resource, Default)]
+pub struct AutoAimMode {
     pub enabled: bool,
-    pub last_update_time: f64,
-    pub pitch_controller: SmoothController,
-    pub yaw_controller: SmoothController,
 }
 
-impl Default for GimbalControl {
-    fn default() -> Self {
-        // Smoothing factor 0.2: compensates 20% of error per second
-        // Provides good balance between responsiveness and smoothness
-        Self {
-            target_pitch: 0.0,
-            target_yaw: 0.0,
-            target_distance: 0.0,
-            vel_x: 0.0,
-            vel_y: 0.0,
-            vel_yaw: 0.0,
-            enabled: false,
-            last_update_time: 0.0,
-            pitch_controller: SmoothController::new(0.2),
-            yaw_controller: SmoothController::new(0.2),
-        }
-    }
+/// Target euler angles from vision system
+#[derive(Resource, Default, Clone)]
+pub struct TargetEuler {
+    pub yaw: f32,    // Target yaw angle in radians
+    pub pitch: f32,  // Target pitch angle in radians
+    pub valid: bool, // Whether the data is valid
+}
+
+/// Fire command from vision system
+#[derive(Resource, Default)]
+pub struct FireCommand {
+    pub fire: bool,
 }
 
 /// Resource for vision_send_data subscriber
@@ -404,12 +356,20 @@ fn publish_vision_recv_data(
     publisher.publish(msg);
 }
 
-/// System to receive vision_send_data messages and update gimbal control targets
-fn receive_vision_send_data(
+/// System to process vision_send_data messages and update target euler angles
+fn process_subscriptions(
     subscriber: Res<VisionSendDataSubscriber>,
-    mut gimbal_control: ResMut<GimbalControl>,
-    time: Res<Time>,
+    mut target_euler: ResMut<TargetEuler>,
+    mut fire_command: ResMut<FireCommand>,
+    auto_aim: Res<AutoAimMode>,
 ) {
+    // Only process messages when auto-aim mode is enabled
+    if !auto_aim.enabled {
+        target_euler.valid = false;
+        fire_command.fire = false;
+        return;
+    }
+
     let receiver = subscriber.receiver.lock().unwrap();
     
     // Process all available messages, keeping only the latest
@@ -424,106 +384,23 @@ fn receive_vision_send_data(
         let has_target = msg.pitch.abs() > EPSILON || msg.yaw.abs() > EPSILON;
         
         if has_target {
-            let was_enabled = gimbal_control.enabled;
+            // pitch and yaw are in degrees, convert to radians for internal use
+            target_euler.yaw = msg.yaw.to_radians();
+            target_euler.pitch = msg.pitch.to_radians();
+            target_euler.valid = true;
             
-            // pitch and yaw are absolute angles relative to chassis (in degrees)
-            // Vision algorithm calculates target angles based on current angles we send
-            // Convert to radians for internal use
-            gimbal_control.target_pitch = msg.pitch.to_radians();
-            gimbal_control.target_yaw = msg.yaw.to_radians();
-            gimbal_control.target_distance = msg.target_distance;
-            gimbal_control.vel_x = msg.vel_x;
-            gimbal_control.vel_y = msg.vel_y;
-            gimbal_control.vel_yaw = msg.vel_yaw;
-            gimbal_control.enabled = true;
-            gimbal_control.last_update_time = time.elapsed_secs_f64();
-            
-            // Reset controllers when enabling vision control
-            if !was_enabled {
-                gimbal_control.pitch_controller.reset();
-                gimbal_control.yaw_controller.reset();
-            }
+            // Check TargetState for fire command (0=no fire, others=fire)
+            fire_command.fire = msg.target_state.data == 0;
             
             info!(
-                "Vision target: pitch={:.2}°, yaw={:.2}°, distance={:.2}m",
-                msg.pitch, msg.yaw, msg.target_distance
+                "Vision target: pitch={:.2}°, yaw={:.2}°, fire={}",
+                msg.pitch, msg.yaw, fire_command.fire
             );
         } else {
-            // No target: disable auto control and switch to manual mode
-            if gimbal_control.enabled {
-                gimbal_control.enabled = false;
-                gimbal_control.pitch_controller.reset();
-                gimbal_control.yaw_controller.reset();
-                info!("No target detected (pitch=0, yaw=0), switching to manual control");
-            }
+            target_euler.valid = false;
+            fire_command.fire = false;
         }
     }
-}
-
-/// System to apply vision-based gimbal control with smooth motion
-fn apply_gimbal_control(
-    time: Res<Time>,
-    mut gimbal_control: ResMut<GimbalControl>,
-    mut gimbal_query: Query<
-        (&mut Transform, &mut InfantryGimbal),
-        (With<LocalInfantry>, Without<InfantryChassis>),
-    >,
-) {
-    let Some((mut gimbal_transform, mut gimbal_data)) = gimbal_query.iter_mut().next() else {
-        return; // Gimbal not ready yet
-    };
-
-    // Check for timeout: disable auto control if no new messages for 0.5 seconds
-    const VISION_TIMEOUT: f64 = 0.5;
-    let current_time = time.elapsed_secs_f64();
-
-    if gimbal_control.enabled {
-        if current_time - gimbal_control.last_update_time > VISION_TIMEOUT {
-            gimbal_control.enabled = false;
-            gimbal_control.pitch_controller.reset();
-            gimbal_control.yaw_controller.reset();
-            info!("Vision control timeout, switching to manual control");
-        }
-    }
-
-    // Only apply auto control when vision control is enabled
-    if !gimbal_control.enabled {
-        return; // Allow manual control
-    }
-
-    let dt = time.delta_secs();
-    if dt <= 0.0 {
-        return; // Avoid division by zero
-    }
-
-    // Calculate desired angular velocities using smooth controller
-    let pitch_velocity = gimbal_control.pitch_controller.update(
-        gimbal_data.pitch,
-        gimbal_control.target_pitch,
-        dt,
-    );
-    let yaw_velocity = gimbal_control.yaw_controller.update(
-        gimbal_data.local_yaw,
-        gimbal_control.target_yaw,
-        dt,
-    );
-
-    // Limit maximum angular velocity to prevent jerky motion
-    const MAX_ANGULAR_SPEED: f32 = 2.5; // rad/s (~143°/s)
-    let pitch_velocity = pitch_velocity.clamp(-MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED);
-    let yaw_velocity = yaw_velocity.clamp(-MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED);
-
-    // Apply angular velocities to gimbal angles
-    gimbal_data.pitch += pitch_velocity * dt;
-    gimbal_data.local_yaw += yaw_velocity * dt;
-
-    // Clamp pitch to valid range (±45°)
-    gimbal_data.pitch = gimbal_data.pitch.clamp(-0.785, 0.785);
-
-    // Update gimbal transform
-    let gimbal_rotation =
-        Quat::from_euler(EulerRot::YXZ, gimbal_data.local_yaw, gimbal_data.pitch, 0.0);
-    gimbal_transform.rotation = gimbal_rotation;
 }
 
 fn cleanup_ros2_system(
@@ -601,7 +478,9 @@ impl Plugin for ROS2Plugin {
         app.insert_resource(RoboMasterClock(clock.clone()))
             .insert_resource(StopSignal(signal_arc.clone()))
             .insert_resource(VisionConfig::default())
-            .insert_resource(GimbalControl::default())
+            .insert_resource(AutoAimMode::default())
+            .insert_resource(TargetEuler::default())
+            .insert_resource(FireCommand::default())
             .insert_resource(VisionSendDataSubscriber {
                 receiver: rx_arc,
             })
@@ -623,10 +502,9 @@ impl Plugin for ROS2Plugin {
             .add_systems(
                 Update,
                 (
+                    process_subscriptions,
                     capture_rune.after(TransformSystems::Propagate),
                     publish_vision_recv_data.after(TransformSystems::Propagate),
-                    receive_vision_send_data,
-                    apply_gimbal_control,
                 ),
             )
             .insert_resource(SpinThreadHandle(Some(thread::spawn(move || {

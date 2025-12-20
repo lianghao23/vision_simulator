@@ -7,7 +7,7 @@ mod util;
 mod vision_msgs;
 
 use crate::dataset::prelude::DatasetPlugin;
-use crate::ros2::plugin::ROS2Plugin;
+use crate::ros2::plugin::{AutoAimMode, ROS2Plugin, TargetEuler};
 use crate::util::bevy::insert_all_child;
 use crate::{
     handler::{on_activate, on_hit},
@@ -20,7 +20,6 @@ use bevy::camera::Exposure;
 use bevy::light::light_consts::lux;
 use bevy::render::view::screenshot::{Capturing, Screenshot, save_to_disk};
 use bevy::window::{CursorIcon, PresentMode, SystemCursorIcon};
-use bevy::winit::WinitWindows;
 use bevy::{
     anti_alias::fxaa::Fxaa,
     input::mouse::MouseMotion,
@@ -81,32 +80,43 @@ enum GameLayer {
 struct Cooldown(Timer);
 
 /// Creates help text at the bottom of the screen.
-fn create_help_text() -> Text {
+fn create_help_text(auto_aim: &AutoAimMode) -> Text {
     format!(
-        "total={} accurate={} pct={}\nControls: F2-Screenshot F3-Change Camera | WASD-Move Mouse-Look Space-Shoot\n2025 Actor&Thinker",
+        "total={} accurate={} pct={} | mode={}\nControls: F2-Screenshot F3-Camera T-AutoAim | WASD-Move Mouse-Look Space-Shoot\n2025 Actor&Thinker",
         launch_count(),
         accurate_count(),
-        accurate_pct()
+        accurate_pct(),
+        if auto_aim.enabled { "AUTO-AIM" } else { "MANUAL" }
     )
         .into()
 }
 
 /// Spawns the help text at the bottom of the screen.
-fn spawn_text(commands: &mut Commands) {
+fn spawn_text(commands: &mut Commands, auto_aim: &AutoAimMode) {
     commands.spawn((
-        create_help_text(),
+        create_help_text(auto_aim),
         Node {
             position_type: PositionType::Absolute,
             bottom: px(12),
             left: px(12),
             ..default()
         },
+        HelpText,
     ));
 }
 
-fn update_help_text(mut text: Query<&mut Text>) {
-    for mut text in text.iter_mut() {
-        *text = create_help_text();
+#[derive(Component)]
+struct HelpText;
+
+/// Update help text when auto-aim mode changes
+fn update_help_text(
+    auto_aim: Res<AutoAimMode>,
+    mut text_query: Query<&mut Text, With<HelpText>>,
+) {
+    if auto_aim.is_changed() {
+        for mut text in text_query.iter_mut() {
+            *text = create_help_text(&auto_aim);
+        }
     }
 }
 
@@ -153,6 +163,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                update_auto_aim_mode,
                 update_help_text,
                 following_controls,
                 vehicle_controls,
@@ -177,8 +188,8 @@ struct PreciousCollision(
     HashMap<String, (ColliderConstructorHierarchy, CollisionLayers, Visibility)>,
 );
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    spawn_text(&mut commands);
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, auto_aim: Res<AutoAimMode>) {
+    spawn_text(&mut commands, &auto_aim);
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.9, 0.95, 1.0),
@@ -516,7 +527,7 @@ fn setup_collision(
 const VEHICLE_ACCEL: f32 = 10.0;
 // 单位 rad/s
 const VEHICLE_ROTATION_SPEED: f32 = 3.0;
-const GIMBAL_ROTATION_SPEED: f32 = 3.0;
+const GIMBAL_ROTATION_SPEED: f32 = 10.0;
 
 const MAX_VEHICLE_VELOCITY: f32 = 6.0;
 
@@ -644,6 +655,18 @@ fn remote_vehicle_controls(
     chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis_data.yaw, 0.0, 0.0);
 }
 
+/// Calculate shortest angle difference (handling ±π boundary)
+fn angle_diff(current: f32, target: f32) -> f32 {
+    let diff = target - current;
+    let mut normalized = diff % (2.0 * std::f32::consts::PI);
+    if normalized > std::f32::consts::PI {
+        normalized -= 2.0 * std::f32::consts::PI;
+    } else if normalized < -std::f32::consts::PI {
+        normalized += 2.0 * std::f32::consts::PI;
+    }
+    normalized
+}
+
 fn gimbal_controls(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -651,6 +674,8 @@ fn gimbal_controls(
         (&mut Transform, &mut InfantryGimbal),
         (With<LocalInfantry>, Without<InfantryChassis>),
     >,
+    auto_aim: Res<AutoAimMode>,
+    target_euler: Res<TargetEuler>,
 ) {
     let dt = time.delta_secs();
     let (mut gimbal_transform, mut gimbal_data) = gimbal.into_inner();
@@ -658,24 +683,52 @@ fn gimbal_controls(
     (gimbal_data.local_yaw, gimbal_data.pitch, _) =
         gimbal_transform.rotation.to_euler(EulerRot::YXZ);
 
-    if keyboard.pressed(KeyCode::ArrowLeft) {
-        gimbal_data.local_yaw += GIMBAL_ROTATION_SPEED * dt;
-    }
-    if keyboard.pressed(KeyCode::ArrowRight) {
-        gimbal_data.local_yaw -= GIMBAL_ROTATION_SPEED * dt;
-    }
-    if keyboard.pressed(KeyCode::ArrowUp) {
-        gimbal_data.pitch += GIMBAL_ROTATION_SPEED * dt;
-    }
-    if keyboard.pressed(KeyCode::ArrowDown) {
-        gimbal_data.pitch -= GIMBAL_ROTATION_SPEED * dt;
+    // Choose control mode based on auto-aim status
+    if auto_aim.enabled && target_euler.valid {
+        // ============== ROS2 Auto-Aim Mode ==============
+        let target_yaw = target_euler.yaw;
+        let target_pitch = target_euler.pitch;
+
+        // Calculate angle difference (handling ±π boundary)
+        let yaw_diff = angle_diff(gimbal_data.local_yaw, target_yaw);
+        let pitch_diff = target_pitch - gimbal_data.pitch;
+
+        // Smooth rotation at fixed rate
+        let max_delta = GIMBAL_ROTATION_SPEED * dt;
+
+        // Yaw control - gradually approach target
+        if yaw_diff.abs() > 0.001 {
+            let yaw_step = yaw_diff.clamp(-max_delta, max_delta);
+            gimbal_data.local_yaw += yaw_step;
+        }
+
+        // Pitch control - gradually approach target
+        if pitch_diff.abs() > 0.001 {
+            let pitch_step = pitch_diff.clamp(-max_delta, max_delta);
+            gimbal_data.pitch += pitch_step;
+        }
+    } else {
+        // ============== Manual Keyboard Control ==============
+        if keyboard.pressed(KeyCode::ArrowLeft) {
+            gimbal_data.local_yaw += GIMBAL_ROTATION_SPEED * dt;
+        }
+        if keyboard.pressed(KeyCode::ArrowRight) {
+            gimbal_data.local_yaw -= GIMBAL_ROTATION_SPEED * dt;
+        }
+        if keyboard.pressed(KeyCode::ArrowUp) {
+            gimbal_data.pitch += GIMBAL_ROTATION_SPEED * dt;
+        }
+        if keyboard.pressed(KeyCode::ArrowDown) {
+            gimbal_data.pitch -= GIMBAL_ROTATION_SPEED * dt;
+        }
     }
 
+    // Clamp pitch to valid range (±45°)
     gimbal_data.pitch = gimbal_data.pitch.clamp(-0.785, 0.785);
 
+    // Apply rotation to transform
     let gimbal_rotation =
         Quat::from_euler(EulerRot::YXZ, gimbal_data.local_yaw, gimbal_data.pitch, 0.0);
-
     gimbal_transform.rotation = gimbal_rotation;
 }
 
@@ -721,6 +774,20 @@ fn following_controls(mut mode: ResMut<CameraMode>, keyboard: Res<ButtonInput<Ke
             FollowingType::Robot => FollowingType::ThirdPerson,
             FollowingType::ThirdPerson => FollowingType::Free,
         };
+    }
+}
+
+/// Toggle auto-aim mode with T key
+fn update_auto_aim_mode(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut auto_aim: ResMut<AutoAimMode>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyT) {
+        auto_aim.enabled = !auto_aim.enabled;
+        info!(
+            "Auto-aim mode: {}",
+            if auto_aim.enabled { "ENABLED" } else { "DISABLED" }
+        );
     }
 }
 
