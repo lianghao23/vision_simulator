@@ -137,7 +137,15 @@ class VisionReceiver(Node):
 ## 构建与运行
 
 ```bash
-# 构建并运行模拟器
+#sudo apt install cargo
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+sudo apt install clang llvm libclang-dev
+
+sudo apt install linux-libc-dev
+
+# 构建并运行模拟器，修改脚本source你电脑上的自瞄install/setup.bash
 source /opt/ros/humble/setup.bash
 cargo build --release
 cargo run --release
