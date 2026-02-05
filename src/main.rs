@@ -44,6 +44,46 @@ pub struct RemoteInfantry {
 #[derive(Component)]
 struct InfantryRoot;
 
+// 自动运动配置参数
+#[derive(Resource)]
+struct AutoMoveConfig {
+    range: f32,           // 往复运动范围（米）
+    min_speed: f32,       // 最小平均速度（米/秒）
+    rotation_speed: f32,  // 自转速度（转/秒）
+}
+
+impl Default for AutoMoveConfig {
+    fn default() -> Self {
+        Self {
+            range: 5.0,
+            min_speed: 1.0,
+            rotation_speed: 0.4,
+        }
+    }
+}
+
+// 自动运动状态
+#[derive(Resource, Default)]
+struct AutoMove {
+    enabled: bool,
+    start_position: Vec3,
+    direction: Vec3,      // 运动方向
+    current_distance: f32, // 当前已移动距离
+    moving_forward: bool,  // true = 正向，false = 反向
+}
+
+impl AutoMove {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            start_position: Vec3::ZERO,
+            direction: Vec3::X, // 默认沿 X 轴运动
+            current_distance: 0.0,
+            moving_forward: true,
+        }
+    }
+}
+
 #[derive(Resource, PartialEq)]
 struct CameraMode(pub FollowingType);
 
@@ -157,6 +197,8 @@ fn main() {
         .add_plugins(PowerRunePlugin)
         .add_plugins(DatasetPlugin)
         .insert_resource(CameraMode(FollowingType::Robot))
+        .insert_resource(AutoMoveConfig::default())
+        .insert_resource(AutoMove::new())
         .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
         .insert_resource(SubstepCount(10))
         .insert_resource(Cooldown(Timer::from_seconds(0.1, TimerMode::Once)))
@@ -173,6 +215,8 @@ fn main() {
                 following_controls,
                 vehicle_controls,
                 remote_vehicle_controls,
+                auto_move_system,
+                toggle_auto_move,
                 gimbal_controls,
                 remote_gimbal_controls,
                 freecam_controls,
@@ -620,7 +664,13 @@ fn remote_vehicle_controls(
         (&mut Transform, &mut InfantryChassis),
         (Without<LocalInfantry>, Without<InfantryGimbal>),
     >,
+    auto_move: Res<AutoMove>,
 ) {
+    // 如果自动运动启用，则不执行手动控制
+    if auto_move.enabled {
+        return;
+    }
+
     let mut input = Vec2::ZERO;
     if keyboard.pressed(KeyCode::KeyI) {
         input.y += 1.0;
@@ -665,6 +715,105 @@ fn remote_vehicle_controls(
     }
 
     chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis_data.yaw, 0.0, 0.0);
+}
+
+// 自动运动控制系统
+fn auto_move_system(
+    time: Res<Time>,
+    config: Res<AutoMoveConfig>,
+    mut auto_move: ResMut<AutoMove>,
+    mut root_query: Query<
+        (Forces, &Mass, &GlobalTransform),
+        (With<InfantryRoot>, With<RemoteInfantry>),
+    >,
+    mut chassis_query: Query<
+        (&mut Transform, &mut InfantryChassis),
+        (With<RemoteInfantry>, Without<InfantryRoot>),
+    >,
+) {
+    if !auto_move.enabled {
+        return;
+    }
+
+    let Ok((mut forces, mass, global_transform)) = root_query.single_mut() else {
+        warn!("Failed to get remote vehicle root for auto move");
+        return;
+    };
+
+    let Ok((mut chassis_transform, mut chassis)) = chassis_query.single_mut() else {
+        warn!("Failed to get remote vehicle chassis for auto move");
+        return;
+    };
+
+    let dt = time.delta_secs();
+
+    // 初始化起始位置（第一次启用时）
+    if auto_move.start_position == Vec3::ZERO {
+        auto_move.start_position = global_transform.translation();
+        info!("Auto move initialized at position: {:?}", auto_move.start_position);
+    }
+
+    // 计算当前位置相对于起点的偏移
+    let current_pos = global_transform.translation();
+    let offset = current_pos - auto_move.start_position;
+    let distance_along_direction = offset.dot(auto_move.direction);
+
+    // 检查是否需要反向（基于实际位置）
+    if distance_along_direction >= config.range && auto_move.moving_forward {
+        auto_move.moving_forward = false;
+        info!("Auto move: reversing direction (reached +{} meters)", distance_along_direction);
+    } else if distance_along_direction <= 0.0 && !auto_move.moving_forward {
+        auto_move.moving_forward = true;
+        info!("Auto move: reversing direction (reached start position)");
+    }
+
+    // 计算目标速度（确保平均速度 >= min_speed）
+    let target_speed = config.min_speed.max(1.0);
+
+    // 计算运动方向
+    let direction = if auto_move.moving_forward {
+        auto_move.direction
+    } else {
+        -auto_move.direction
+    };
+
+    // 应用线性运动
+    let velocity_xz = direction.normalize_or_zero() * target_speed;
+    let current_vel = forces.linear_velocity();
+    let current_vel_xz = Vec3::new(current_vel.x, 0.0, current_vel.z);
+
+    // 使用更强的力来控制速度
+    let vel_diff = velocity_xz - current_vel_xz;
+    forces.apply_linear_impulse(mass.0 * dt * vel_diff * 20.0);
+
+    // 应用自转（转/秒 转换为 弧度/秒）
+    let rotation_speed_rad = config.rotation_speed * 2.0 * std::f32::consts::PI;
+    chassis.yaw += rotation_speed_rad * dt;
+
+    // 更新底盘的旋转 Transform
+    chassis_transform.rotation = Quat::from_euler(EulerRot::YXZ, chassis.yaw, 0.0, 0.0);
+}
+
+// 键盘切换自动运动
+fn toggle_auto_move(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut auto_move: ResMut<AutoMove>,
+    query: Query<&GlobalTransform, (With<InfantryRoot>, With<RemoteInfantry>)>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyP) {
+        auto_move.enabled = !auto_move.enabled;
+        if auto_move.enabled {
+            // 启用时记录起始位置
+            if let Ok(global_transform) = query.single() {
+                auto_move.start_position = global_transform.translation();
+                auto_move.current_distance = 0.0;
+                auto_move.moving_forward = true;
+            }
+            info!("Auto move enabled for remote vehicle");
+        } else {
+            info!("Auto move disabled for remote vehicle");
+        }
+    }
 }
 
 /// Calculate shortest angle difference (handling ±π boundary)
