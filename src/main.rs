@@ -125,21 +125,22 @@ enum GameLayer {
 struct Cooldown(Timer);
 
 /// Creates help text at the bottom of the screen.
-fn create_help_text(auto_aim: &AutoAimMode) -> Text {
+fn create_help_text(auto_aim: &AutoAimMode, auto_move: &AutoMove) -> Text {
     format!(
-        "total={} accurate={} pct={} | mode={}\nControls: F2-Screenshot F3-Camera T-AutoAim | WASD-Move Mouse-Look Space-Shoot\n2025 Actor&Thinker",
+        "total={} accurate={} pct={} | gimbal={} | target={}\nControls: F2-Screenshot F3-Camera T-AutoAim P-TargetAutoMove | WASD-Move IJKL-Target Space-Shoot\n2025 Actor&Thinker",
         launch_count(),
         accurate_count(),
         accurate_pct(),
-        if auto_aim.enabled { "AUTO-AIM" } else { "MANUAL" }
+        if auto_aim.enabled { "AUTO-AIM" } else { "MANUAL" },
+        if auto_move.enabled { "AUTO-MOVE" } else { "MANUAL" }
     )
         .into()
 }
 
 /// Spawns the help text at the bottom of the screen.
-fn spawn_text(commands: &mut Commands, auto_aim: &AutoAimMode) {
+fn spawn_text(commands: &mut Commands, auto_aim: &AutoAimMode, auto_move: &AutoMove) {
     commands.spawn((
-        create_help_text(auto_aim),
+        create_help_text(auto_aim, auto_move),
         Node {
             position_type: PositionType::Absolute,
             bottom: px(12),
@@ -156,11 +157,12 @@ struct HelpText;
 /// Update help text when auto-aim mode changes
 fn update_help_text(
     auto_aim: Res<AutoAimMode>,
+    auto_move: Res<AutoMove>,
     mut text_query: Query<&mut Text, With<HelpText>>,
 ) {
-    if auto_aim.is_changed() {
+    if auto_aim.is_changed() || auto_move.is_changed() {
         for mut text in text_query.iter_mut() {
-            *text = create_help_text(&auto_aim);
+            *text = create_help_text(&auto_aim, &auto_move);
         }
     }
 }
@@ -237,8 +239,8 @@ struct PreciousCollision(
     HashMap<String, (ColliderConstructorHierarchy, CollisionLayers, Visibility)>,
 );
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, auto_aim: Res<AutoAimMode>) {
-    spawn_text(&mut commands, &auto_aim);
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, auto_aim: Res<AutoAimMode>, auto_move: Res<AutoMove>) {
+    spawn_text(&mut commands, &auto_aim, &auto_move);
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.9, 0.95, 1.0),
@@ -750,7 +752,7 @@ fn auto_move_system(
     // 初始化起始位置（第一次启用时）
     if auto_move.start_position == Vec3::ZERO {
         auto_move.start_position = global_transform.translation();
-        info!("Auto move initialized at position: {:?}", auto_move.start_position);
+        // info!("Auto move initialized at position: {:?}", auto_move.start_position);
     }
 
     // 计算当前位置相对于起点的偏移
@@ -761,10 +763,10 @@ fn auto_move_system(
     // 检查是否需要反向（基于实际位置）
     if distance_along_direction >= config.range && auto_move.moving_forward {
         auto_move.moving_forward = false;
-        info!("Auto move: reversing direction (reached +{} meters)", distance_along_direction);
+        // info!("Auto move: reversing direction (reached +{} meters)", distance_along_direction);
     } else if distance_along_direction <= 0.0 && !auto_move.moving_forward {
         auto_move.moving_forward = true;
-        info!("Auto move: reversing direction (reached start position)");
+        // info!("Auto move: reversing direction (reached start position)");
     }
 
     // 计算目标速度（确保平均速度 >= min_speed）

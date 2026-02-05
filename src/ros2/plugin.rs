@@ -288,11 +288,11 @@ fn capture_remote_vehicles(
 
         // 每 60 帧打印一次位置信息用于调试
         if *frame_count % 60 == 0 {
-            info!("Remote vehicle {} Bevy position: {:?}", remote_info.id, translation);
+            // info!("Remote vehicle {} Bevy position: {:?}", remote_info.id, translation);
             // 转换后的位置
             let align_rot_mat = M_ALIGN_MAT3;
             let ros_translation = align_rot_mat * translation;
-            info!("Remote vehicle {} ROS position: {:?}", remote_info.id, ros_translation);
+            // info!("Remote vehicle {} ROS position: {:?}", remote_info.id, ros_translation);
         }
 
         let map_hdr = Header {
@@ -327,7 +327,7 @@ fn capture_remote_vehicles(
 
     if !transform_stamped.is_empty() {
         if *frame_count % 60 == 0 {
-            info!("Publishing {} TF frames for remote vehicles", transform_stamped.len());
+            // info!("Publishing {} TF frames for remote vehicles", transform_stamped.len());
         }
         tf_publisher.publish(TFMessage {
             transforms: transform_stamped,
