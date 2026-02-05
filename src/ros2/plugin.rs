@@ -4,6 +4,7 @@ use crate::{
     arc_mutex, publisher,
     robomaster::power_rune::{PowerRune, RuneIndex},
     InfantryChassis, InfantryGimbal, InfantryRoot, InfantryViewOffset, LocalInfantry,
+    RemoteInfantry,
 };
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -268,6 +269,72 @@ fn capture_rune(
     });
 }
 
+fn capture_remote_vehicles(
+    remote_gimbals: Query<
+        (&GlobalTransform, &RemoteInfantry),
+        (Without<LocalInfantry>, With<InfantryGimbal>),
+    >,
+    clock: Res<RoboMasterClock>,
+    tf_publisher: Res<TopicPublisher<GlobalTransformTopic>>,
+    mut frame_count: Local<u32>,
+) {
+    let stamp = Clock::to_builtin_time(&res_unwrap!(clock).get_now().unwrap());
+    let mut transform_stamped = vec![];
+
+    for (gimbal_transform, remote_info) in remote_gimbals.iter() {
+        let prefix = format!("remote_{}", remote_info.id);
+
+        let translation = gimbal_transform.translation();
+
+        // 每 60 帧打印一次位置信息用于调试
+        if *frame_count % 60 == 0 {
+            info!("Remote vehicle {} Bevy position: {:?}", remote_info.id, translation);
+            // 转换后的位置
+            let align_rot_mat = M_ALIGN_MAT3;
+            let ros_translation = align_rot_mat * translation;
+            info!("Remote vehicle {} ROS position: {:?}", remote_info.id, ros_translation);
+        }
+
+        let map_hdr = Header {
+            stamp: stamp.clone(),
+            frame_id: "map".to_string(),
+        };
+        let odom_hdr = Header {
+            stamp: stamp.clone(),
+            frame_id: format!("{}/odom", prefix),
+        };
+
+        // map → remote_1/odom (使用云台的全局位置，与本地车辆逻辑一致)
+        add_tf_frame!(
+            transform_stamped,
+            map_hdr.clone(),
+            format!("{}/odom", prefix),
+            translation,
+            Quat::IDENTITY
+        );
+
+        // remote_1/odom → remote_1/gimbal_link (使用云台的旋转)
+        add_tf_frame!(
+            transform_stamped,
+            odom_hdr.clone(),
+            format!("{}/gimbal_link", prefix),
+            Vec3::ZERO,
+            gimbal_transform.rotation()
+        );
+    }
+
+    *frame_count += 1;
+
+    if !transform_stamped.is_empty() {
+        if *frame_count % 60 == 0 {
+            info!("Publishing {} TF frames for remote vehicles", transform_stamped.len());
+        }
+        tf_publisher.publish(TFMessage {
+            transforms: transform_stamped,
+        });
+    }
+}
+
 fn publish_vision_recv_data(
     gimbal_query: Query<(&GlobalTransform, &InfantryGimbal), (With<LocalInfantry>, Without<InfantryChassis>)>,
     chassis_query: Query<&InfantryChassis, With<LocalInfantry>>,
@@ -504,6 +571,7 @@ impl Plugin for ROS2Plugin {
                 (
                     process_subscriptions,
                     capture_rune.after(TransformSystems::Propagate),
+                    capture_remote_vehicles.after(TransformSystems::Propagate),
                     publish_vision_recv_data.after(TransformSystems::Propagate),
                 ),
             )

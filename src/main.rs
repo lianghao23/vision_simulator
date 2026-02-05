@@ -37,6 +37,11 @@ struct MainCamera {
 struct LocalInfantry;
 
 #[derive(Component)]
+pub struct RemoteInfantry {
+    pub id: u8,
+}
+
+#[derive(Component)]
 struct InfantryRoot;
 
 #[derive(Resource, PartialEq)]
@@ -311,6 +316,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, auto_aim: Res<A
         ),
         Transform::from_xyz(1.0, 1.0, 1.0),
         InfantryRoot,
+        RemoteInfantry { id: 1 },
     ));
 
     commands.spawn((
@@ -340,7 +346,7 @@ fn setup_vehicle(
     events: On<SceneInstanceReady>,
     mut commands: Commands,
     children: Query<&Children>,
-    root_query: Query<(Entity, Option<&LocalInfantry>), With<InfantryRoot>>,
+    root_query: Query<(Entity, Option<&LocalInfantry>, Option<&RemoteInfantry>), With<InfantryRoot>>,
     secondary_query: Query<&ChildOf, (Without<InfantryRoot>, Without<SceneInstance>)>,
     node_query: Query<
         (Entity, &Name, &ChildOf, &Transform),
@@ -351,7 +357,11 @@ fn setup_vehicle(
     if root_query.get(root).is_err() {
         return;
     }
-    let is_local = root_query.get(root).unwrap().1.is_some();
+    let (is_local, remote_id) = match root_query.get(root).unwrap() {
+        (_, Some(_), _) => (true, None),
+        (_, _, Some(remote)) => (false, Some(remote.id)),
+        _ => (false, None),
+    };
 
     let mut despawn = HashSet::new();
 
@@ -368,6 +378,8 @@ fn setup_vehicle(
         let mut ent = commands.entity(node);
         if is_local {
             ent.insert(LocalInfantry);
+        } else if let Some(id) = remote_id {
+            ent.insert(RemoteInfantry { id });
         }
         match name.as_str() {
             "BASE" => {
@@ -599,7 +611,7 @@ fn remote_vehicle_controls(
     time: Res<Time>,
     _mode: Res<CameraMode>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    infantry: Single<Forces, (With<InfantryRoot>, Without<LocalInfantry>)>,
+    infantry: Single<(Forces, &Mass), (With<InfantryRoot>, Without<LocalInfantry>)>,
     gimbal: Single<
         (&GlobalTransform, &InfantryGimbal),
         (Without<LocalInfantry>, Without<InfantryChassis>),
@@ -624,7 +636,7 @@ fn remote_vehicle_controls(
     }
 
     let dt = time.delta_secs();
-    let mut forces = infantry.into_inner();
+    let (mut forces, mass) = infantry.into_inner();
 
     let (mut chassis_transform, mut chassis_data) = chassis.into_inner();
     let (gimbal_transform, _gimbal) = gimbal.into_inner();
@@ -635,14 +647,14 @@ fn remote_vehicle_controls(
     let right_xz = right.with_y(0.0).normalize_or_zero();
 
     let desired_dir = (forward_xz * input.y + right_xz * input.x).normalize_or_zero();
-    forces.apply_linear_acceleration(desired_dir * VEHICLE_ACCEL);
+    forces.apply_linear_impulse(mass.0 * dt * desired_dir * VEHICLE_ACCEL);
     let linear_vel = forces.linear_velocity();
     let current_velocity = linear_vel.length();
     if current_velocity > MAX_VEHICLE_VELOCITY {
         let brake_force = linear_vel.normalize() * (current_velocity - MAX_VEHICLE_VELOCITY) * 50.0;
-        forces.apply_linear_acceleration(-brake_force);
+        forces.apply_linear_impulse(mass.0 * dt * -brake_force);
     } else if input == Vec2::ZERO {
-        forces.apply_linear_acceleration(-linear_vel * 10.0);
+        forces.apply_linear_impulse(mass.0 * dt * -linear_vel * 10.0);
     }
 
     if keyboard.pressed(KeyCode::KeyU) {
