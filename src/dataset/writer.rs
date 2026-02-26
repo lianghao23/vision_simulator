@@ -6,6 +6,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ArmorEntry {
     pub color: u8,
     pub label: u8,
@@ -13,8 +14,11 @@ pub struct ArmorEntry {
 }
 
 pub struct DatasetWriter {
+    #[allow(dead_code)]
     image_dir: PathBuf,
+    #[allow(dead_code)]
     label_dir: PathBuf,
+    #[allow(dead_code)]
     seq: u64,
 }
 
@@ -34,11 +38,13 @@ impl DatasetWriter {
         })
     }
 
+    #[allow(dead_code)]
     fn next_frame_name(&mut self) -> String {
         self.seq += 1;
         format!("frame_{:06}", self.seq)
     }
 
+    #[allow(dead_code)]
     pub fn write_entry(&mut self, image: &Image, entries: Vec<ArmorEntry>) -> std::io::Result<()> {
         let frame = self.next_frame_name();
 
@@ -61,6 +67,7 @@ impl DatasetWriter {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn save_image(&self, img: &Image, path: &Path) -> std::io::Result<()> {
         let data = img.clone().try_into_dynamic().unwrap().to_rgb8().into_raw();
         let buffer = ImageBuffer::<Rgb<u8>, _>::from_raw(img.width(), img.height(), data).unwrap();

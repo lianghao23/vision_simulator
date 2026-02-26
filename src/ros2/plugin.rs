@@ -291,7 +291,7 @@ fn capture_remote_vehicles(
             // info!("Remote vehicle {} Bevy position: {:?}", remote_info.id, translation);
             // 转换后的位置
             let align_rot_mat = M_ALIGN_MAT3;
-            let ros_translation = align_rot_mat * translation;
+            let _ros_translation = align_rot_mat * translation;
             // info!("Remote vehicle {} ROS position: {:?}", remote_info.id, ros_translation);
         }
 
@@ -353,7 +353,7 @@ fn publish_vision_recv_data(
         }
         return; // Gimbal not ready yet
     };
-    let Some(chassis_data) = chassis_query.iter().next() else {
+    let Some(_chassis_data) = chassis_query.iter().next() else {
         if !*logged {
             debug!("Waiting for chassis entity to be ready...");
             *logged = true;

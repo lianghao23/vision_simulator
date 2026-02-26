@@ -635,7 +635,7 @@ struct PowerRuneParam<'w, 's> {
     scene_spawner: Res<'w, SceneSpawner>,
     cache: ResMut<'w, MaterialCache>,
 
-    gizmo_assets: ResMut<'w, Assets<GizmoAsset>>,
+    _gizmo_assets: ResMut<'w, Assets<GizmoAsset>>,
 
     power_query: Query<'w, 's, (), With<PowerRuneRoot>>,
     names: Query<'w, 's, &'static Name>,
@@ -737,7 +737,7 @@ fn handle_rune_collision(
     mut commands: Commands,
     mut runes: Query<&mut PowerRune>,
     targets: Query<&RuneIndex>,
-    name: Query<&Name>,
+    _name: Query<&Name>,
     projectiles: Query<(), With<Projectile>>,
     mut param: PowerRuneParam,
 ) {

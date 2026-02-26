@@ -84,6 +84,7 @@ pub trait RosTopic {
 
 macro_rules! define_topic {
     ($topic:ident, $typ:ty, $url:expr, $qos:expr) => {
+        #[allow(dead_code)]
         pub struct $topic;
         impl RosTopic for $topic {
             type T = $typ;
