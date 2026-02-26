@@ -97,7 +97,7 @@ macro_rules! define_topic {
 }
 
 define_topic!(CameraInfoTopic, CameraInfo, "/camera_info");
-define_topic!(ImageRawTopic, Image, "/image_raw");
+define_topic!(ImageRawTopic, Image, "/image");
 define_topic!(ImageCompressedTopic, CompressedImage, "/image_compressed");
 define_topic!(GlobalTransformTopic, TFMessage, "/tf");
 
